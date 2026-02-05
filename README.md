@@ -1,41 +1,68 @@
-# TFTC - Trimodal Fusion Transformer Classifier
+# 多模态MIL肿瘤分类器 (Multi-Modal MIL Tumor Classifier)
 
-用于消化道粘膜下肿瘤（SMT）多分类的三模态融合Transformer模型。
+用于消化道粘膜下肿瘤(SMT)分类的深度学习模型，基于Multiple Instance Learning (MIL)架构。
 
-## 模型概述
+## 病理类别
 
-TFTC (Trimodal Fusion Transformer Classifier) 是一个深度学习模型，融合三种模态的信息进行肿瘤分类：
+- **平滑肌瘤** (Leiomyoma)
+- **脂肪瘤** (Lipoma)
+- **间质瘤** (GIST)
+- **神经内分泌瘤** (NET)
+- **异位胰腺** (Ectopic Pancreas)
+- **其他** (Other)
 
-1. **白光内镜图像 (WLI)** - 捕捉表面形态、颜色、血管纹理
-2. **超声内镜图像 (EUS)** - 捕捉深层结构、起源层次、内部回声特征
-3. **器官位置信息 (Location)** - 肿瘤所在消化道部位的临床先验知识
+## 模型架构
+
+```
+数据输入
+    │
+    ├── 超声帧 [B, N, 3, H, W] ──→ 超声编码器 (ResNet/ViT) ──→ h_us [B, N, D]
+    │   (灰度 + 边缘 + 深度)
+    │
+    └── 白光帧 [B, N, 3, H, W] ──→ 白光编码器 (ResNet/ViT) ──→ h_wli [B, N, D]
+        (RGB)
+                                            │
+                                            ▼
+                              多模态融合 (Concat / Cross-Attention)
+                                            │
+                                            ▼
+                                      h_fused [B, N, D]
+                                            │
+                                            ▼
+                                MIL 注意力池化 (Gated Attention)
+                                            │
+                                            ▼
+                                    H_patient [B, D]
+                                    attention_weights [B, N]
+                                            │
+                    ┌───────────────────────┴───────────────────────┐
+                    ▼                                               ▼
+            病人级分类器                                      帧级辅助分类器
+            (6分类)                                          (肿瘤检测)
+```
 
 ## 项目结构
 
 ```
 TFTC_EUS/
 ├── configs/
-│   └── default_config.py      # 默认配置文件
+│   └── config.py              # 配置文件
 ├── scripts/
 │   └── train.py               # 训练脚本
-├── tftc/
+├── mil_classifier/
 │   ├── __init__.py
-│   ├── data/
-│   │   ├── __init__.py
-│   │   ├── augmentation.py    # 数据增强
-│   │   └── dataset.py         # 数据集类
-│   ├── losses/
-│   │   ├── __init__.py
-│   │   └── focal_loss.py      # 损失函数
 │   ├── models/
-│   │   ├── __init__.py
-│   │   ├── eus_encoder.py     # EUS编码器 (ConvNeXt/ResNet)
-│   │   ├── fusion_transformer.py  # 融合Transformer
-│   │   ├── location_embedder.py   # 位置嵌入器
-│   │   ├── tftc.py            # 主模型
-│   │   └── wli_encoder.py     # WLI编码器 (Swin Transformer)
+│   │   ├── encoders.py        # 超声/白光编码器
+│   │   ├── fusion.py          # 多模态融合
+│   │   ├── mil_pooling.py     # MIL注意力池化
+│   │   ├── classifier.py      # 分类器
+│   │   └── mil_model.py       # 完整模型
+│   ├── data/
+│   │   ├── dataset.py         # MIL数据集
+│   │   └── augmentation.py    # 数据增强
+│   ├── losses/
+│   │   └── losses.py          # 损失函数
 │   └── utils/
-│       ├── __init__.py
 │       └── metrics.py         # 评估指标
 ├── requirements.txt
 └── README.md
@@ -44,41 +71,27 @@ TFTC_EUS/
 ## 安装
 
 ```bash
-# 克隆仓库
-git clone <repository_url>
-cd TFTC_EUS
-
-# 安装依赖
 pip install -r requirements.txt
 ```
 
 ## 数据准备
 
-准备CSV格式的数据文件，包含以下列：
+CSV格式:
 
-| patient_id | wli_path | eus_path | location | label |
-|------------|----------|----------|----------|-------|
-| 001 | wli/001.jpg | eus/001.jpg | gastric_body | gist |
-| 002 | wli/002.jpg | eus/002.jpg | esophagus | esophageal_leiomyoma |
+| patient_id | frame_id | eus_path | wli_path | label | frame_label |
+|------------|----------|----------|----------|-------|-------------|
+| 001 | 0 | eus/001_0.jpg | wli/001_0.jpg | 2 | 1 |
+| 001 | 1 | eus/001_1.jpg | wli/001_1.jpg | 2 | 0 |
+| 002 | 0 | eus/002_0.jpg | wli/002_0.jpg | 0 | 1 |
 
-**支持的位置类别：**
-- `esophagus` (食管)
-- `gastric_cardia` (贲门)
-- `gastric_fundus` (胃底)
-- `gastric_body` (胃体)
-- `gastric_antrum` (胃窦)
-- `duodenum` (十二指肠)
-
-**支持的肿瘤类别：**
-- `esophageal_leiomyoma` (食管平滑肌瘤)
-- `gastric_leiomyoma` (胃平滑肌瘤)
-- `gist` (胃肠道间质瘤)
-- `lipoma` (脂肪瘤)
-- `other` (其他)
+- `patient_id`: 病人ID
+- `frame_id`: 帧序号
+- `eus_path`: 超声图像路径
+- `wli_path`: 白光图像路径
+- `label`: 病人级标签 (0-5)
+- `frame_label`: 帧级标签 (0/1, 可选)
 
 ## 训练
-
-### 基本训练
 
 ```bash
 python scripts/train.py \
@@ -86,124 +99,135 @@ python scripts/train.py \
     --train_csv train.csv \
     --val_csv val.csv \
     --epochs 100 \
-    --batch_size 16 \
-    --lr 1e-4
+    --batch_size 8 \
+    --backbone resnet50 \
+    --fusion_type cross_attention \
+    --mil_pooling gated_attention
 ```
 
-### 使用不同编码器
+### 参数说明
 
-```bash
-# 使用 ViT 作为 WLI 编码器
-python scripts/train.py \
-    --wli_encoder vit_l_16 \
-    --eus_encoder resnet50
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--backbone` | 编码器骨干网络 | resnet50 |
+| `--fusion_type` | 融合方式 | cross_attention |
+| `--mil_pooling` | MIL池化方式 | gated_attention |
+| `--batch_size` | 批次大小 (病人数) | 8 |
+| `--lr` | 学习率 | 1e-4 |
+| `--loss` | 损失函数 | focal |
+
+### 支持的选项
+
+**Backbone**: `resnet50`, `resnet18`, `convnext_tiny`, `vit_b_16`
+
+**融合方式**: `concat`, `cross_attention`, `both`
+
+**MIL池化**: `attention`, `gated_attention`, `transformer`, `max`, `mean`
+
+**损失函数**: `focal`, `ce`, `class_balanced`
+
+## 模型特性
+
+### 1. 超声图像预处理
+
+将灰度超声图像转换为3通道输入:
+- 通道1: CLAHE增强的灰度图
+- 通道2: Canny边缘检测
+- 通道3: 形态学梯度 (层次增强)
+
+### 2. 多模态融合
+
+**Concat融合**: 简单拼接后通过MLP
+
+**Cross-Attention融合**:
+- 超声 attend to 白光 (获取表面特征)
+- 白光 attend to 超声 (获取深层结构)
+
+### 3. MIL注意力池化
+
+**Gated Attention MIL**:
+```
+a_k = exp(W * (tanh(V * h_k) ⊙ sigmoid(U * h_k))) / Σ(...)
+H = Σ(a_k * h_k)
 ```
 
-### 消融实验
+门控机制可以更好地控制关键帧的注意力权重。
 
-```bash
-# 运行完整消融实验
-python scripts/train.py --ablation
+### 4. 辅助任务
 
-# 仅使用部分模态
-python scripts/train.py --modalities wli eus  # 不使用位置信息
-python scripts/train.py --modalities wli location  # 不使用EUS
+帧级肿瘤检测作为辅助任务，增强MIL注意力学习。
+
+### 5. 数据增强
+
+**超声增强**:
+- 亮度抖动
+- 斑点噪声 (模拟超声特有噪声)
+- 随机平移
+
+**白光增强**:
+- 颜色抖动
+- 随机反光 (模拟内镜光源)
+- 旋转/翻转
+
+### 6. 类别平衡
+
+- Focal Loss: 处理类别不平衡
+- 平衡批次采样: 确保每个batch包含各类样本
+
+## API使用
+
+```python
+from mil_classifier import MultiModalMILClassifier
+
+# 创建模型
+model = MultiModalMILClassifier(
+    backbone='resnet50',
+    fusion_type='cross_attention',
+    mil_pooling_type='gated_attention',
+    num_classes=6
+)
+
+# 前向传播
+outputs = model(
+    us_frames=eus_tensor,    # [B, N, 3, 224, 224]
+    wli_frames=wli_tensor,   # [B, N, 3, 224, 224]
+    mask=mask_tensor,        # [B, N] 可选
+    return_attention=True
+)
+
+# 输出
+logits = outputs['patient_logits']      # [B, 6]
+attention = outputs['attention_weights'] # [B, N]
+
+# 预测
+results = model.predict(eus_tensor, wli_tensor)
+# results['predictions']: 预测类别
+# results['probabilities']: 类别概率
+# results['attention_weights']: 注意力权重 (用于可视化关键帧)
 ```
 
-## 模型架构
+## 可解释性
 
-### 1. WLI 编码器 (WLI_Encoder)
-- **类型**: Swin Transformer V2 (Base) 或 ViT L/16
-- **输入**: RGB 图像 (224×224)
-- **输出**: 特征向量 F_WLI ∈ ℝ^1024
+通过`attention_weights`可以可视化模型关注的关键帧:
 
-### 2. EUS 编码器 (EUS_Encoder)
-- **类型**: ConvNeXt (Base) 或 ResNet-50
-- **输入**: 灰度/RGB 图像 (224×224)
-- **输出**: 特征向量 F_EUS ∈ ℝ^1024
+```python
+# 获取注意力最高的前5帧
+viz_info = model.get_attention_visualization(
+    eus_tensor, wli_tensor, top_k=5
+)
 
-### 3. 位置嵌入器 (Location_Embedder)
-- **类型**: MLP
-- **输入**: One-hot 编码的位置信息
-- **输出**: 位置特征 F_LOC ∈ ℝ^128
-
-### 4. 融合Transformer (Fusion_Transformer)
-- **类型**: 3层 Transformer Encoder
-- **输入**: 拼接特征 [F_WLI, F_EUS, F_LOC]
-- **输出**: 上下文感知特征
-
-### 5. 分类头 (Classification_Head)
-- **类型**: 两层全连接网络
-- **输出**: 类别概率分布
-
-## 训练细节
-
-- **损失函数**: Focal Loss (γ=2.0) - 处理类别不平衡
-- **优化器**: AdamW (lr=1e-4, weight_decay=0.01)
-- **学习率调度**: Cosine Annealing with Warmup
-- **数据增强**:
-  - WLI: 随机裁剪、翻转、颜色抖动、高斯模糊
-  - EUS: 随机裁剪、翻转、斑点噪声
+top_indices = viz_info['top_frame_indices']  # 关键帧索引
+top_weights = viz_info['top_frame_weights']  # 对应权重
+```
 
 ## 评估指标
 
 - 准确率 (Accuracy)
-- 精确率 (Precision) - macro/micro/weighted/per-class
+- 精确率 (Precision): macro/micro/weighted/per-class
 - 召回率 (Recall)
 - F1-Score
-- 混淆矩阵 (Confusion Matrix)
-- ROC曲线和AUC
-
-## API 使用
-
-```python
-from tftc import TFTC, TFTCAblation
-
-# 创建完整模型
-model = TFTC()
-
-# 创建消融模型 (仅使用 WLI + EUS)
-model = TFTCAblation.wli_eus()
-
-# 前向传播
-logits = model(
-    wli_image=wli_tensor,    # (B, 3, 224, 224)
-    eus_image=eus_tensor,    # (B, 3, 224, 224)
-    location=location_onehot  # (B, num_locations)
-)
-
-# 获取中间特征
-logits, features = model(
-    wli_image=wli_tensor,
-    eus_image=eus_tensor,
-    location=location_onehot,
-    return_features=True
-)
-```
-
-## 配置说明
-
-详细配置请参考 `configs/default_config.py`，包括：
-
-- `ImageConfig`: 图像预处理配置
-- `WLIEncoderConfig`: WLI编码器配置
-- `EUSEncoderConfig`: EUS编码器配置
-- `LocationEmbedderConfig`: 位置嵌入器配置
-- `FusionTransformerConfig`: 融合Transformer配置
-- `ClassifierConfig`: 分类头配置
-- `TrainingConfig`: 训练配置
-- `AugmentationConfig`: 数据增强配置
-
-## 消融实验设计
-
-为验证各模态的贡献，建议进行以下实验：
-
-1. **仅WLI**: 只使用白光内镜图像
-2. **仅EUS**: 只使用超声内镜图像
-3. **WLI + EUS**: 不使用位置信息
-4. **WLI + Location**: 不使用EUS
-5. **EUS + Location**: 不使用WLI
-6. **完整模型**: WLI + EUS + Location
+- AUROC (每类)
+- 混淆矩阵
 
 ## License
 

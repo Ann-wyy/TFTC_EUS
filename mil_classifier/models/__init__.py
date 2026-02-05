@@ -1,0 +1,66 @@
+"""
+模型模块
+
+导出所有模型组件
+"""
+
+from .encoders import (
+    BaseEncoder,
+    UltrasoundEncoder,
+    WhiteLightEncoder,
+    create_encoder
+)
+
+from .fusion import (
+    ConcatFusion,
+    CrossAttentionFusion,
+    MultiModalFusion
+)
+
+from .mil_pooling import (
+    AttentionMILPooling,
+    GatedAttentionMILPooling,
+    TransformerMILPooling,
+    MILPooling
+)
+
+from .classifier import (
+    PatientClassifier,
+    FrameClassifier,
+    MultiTaskClassifier,
+    ClassificationHead
+)
+
+from .mil_model import (
+    MultiModalMILClassifier,
+    create_model
+)
+
+__all__ = [
+    # Encoders
+    'BaseEncoder',
+    'UltrasoundEncoder',
+    'WhiteLightEncoder',
+    'create_encoder',
+
+    # Fusion
+    'ConcatFusion',
+    'CrossAttentionFusion',
+    'MultiModalFusion',
+
+    # MIL Pooling
+    'AttentionMILPooling',
+    'GatedAttentionMILPooling',
+    'TransformerMILPooling',
+    'MILPooling',
+
+    # Classifier
+    'PatientClassifier',
+    'FrameClassifier',
+    'MultiTaskClassifier',
+    'ClassificationHead',
+
+    # Main Model
+    'MultiModalMILClassifier',
+    'create_model',
+]
