@@ -47,16 +47,9 @@ class DataConfig:
     # 白光图像通道: RGB
     wli_channels: int = 3
 
-    # 病理类别
-    num_classes: int = 6
-    class_names: List[str] = field(default_factory=lambda: [
-        "平滑肌瘤",      # Leiomyoma
-        "脂肪瘤",        # Lipoma
-        "间质瘤",        # GIST
-        "神经内分泌瘤",  # NET
-        "异位胰腺",      # Ectopic Pancreas
-        "其他"           # Other
-    ])
+    # 病理类别 (自动从文件夹检测，无需手动指定)
+    num_classes: int = 0  # 自动检测
+    class_names: Optional[List[str]] = None  # 自动从文件夹名检测
 
     # 归一化参数 (ImageNet)
     normalize_mean: Tuple[float, float, float] = (0.485, 0.456, 0.406)

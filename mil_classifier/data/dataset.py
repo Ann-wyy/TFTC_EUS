@@ -544,27 +544,65 @@ def create_data_loaders_from_folder(
     # 使用检测到的类别名
     class_names = detected_class_names
 
+    # 检查每个类别的最小样本数
+    from collections import Counter
+    label_counts = Counter(labels)
+    min_samples_per_class = min(label_counts.values())
+    num_classes = len(label_counts)
+
+    print(f"类别分布: {dict(label_counts)}")
+    print(f"每类最少样本数: {min_samples_per_class}")
+
+    # 计算是否可以进行分层抽样
+    # 分层抽样要求每个类别在每个split中至少有1个样本
+    can_stratify = min_samples_per_class >= 3  # 至少3个才能分到train/val/test
+
     # 划分数据集
-    # 先分出测试集
-    if test_ratio > 0:
-        train_val_paths, test_paths, train_val_labels, test_labels = train_test_split(
-            patient_paths, labels,
-            test_size=test_ratio,
-            stratify=labels,
-            random_state=random_seed
-        )
+    if test_ratio > 0 and len(patient_paths) > 0:
+        try:
+            train_val_paths, test_paths, train_val_labels, test_labels = train_test_split(
+                patient_paths, labels,
+                test_size=test_ratio,
+                stratify=labels if can_stratify else None,
+                random_state=random_seed
+            )
+        except ValueError as e:
+            print(f"警告: 分层抽样失败 ({e})，使用随机抽样")
+            train_val_paths, test_paths, train_val_labels, test_labels = train_test_split(
+                patient_paths, labels,
+                test_size=test_ratio,
+                stratify=None,
+                random_state=random_seed
+            )
     else:
         train_val_paths, train_val_labels = patient_paths, labels
         test_paths, test_labels = [], []
 
     # 再分出验证集
-    actual_val_ratio = val_ratio / (1 - test_ratio) if test_ratio < 1 else val_ratio
-    train_paths, val_paths, train_labels, val_labels = train_test_split(
-        train_val_paths, train_val_labels,
-        test_size=actual_val_ratio,
-        stratify=train_val_labels,
-        random_state=random_seed
-    )
+    if len(train_val_paths) > 0:
+        actual_val_ratio = val_ratio / (1 - test_ratio) if test_ratio < 1 else val_ratio
+        # 重新检查是否可以分层
+        train_val_counts = Counter(train_val_labels)
+        can_stratify_val = min(train_val_counts.values()) >= 2
+
+        try:
+            train_paths, val_paths, train_labels, val_labels = train_test_split(
+                train_val_paths, train_val_labels,
+                test_size=actual_val_ratio,
+                stratify=train_val_labels if can_stratify_val else None,
+                random_state=random_seed
+            )
+        except ValueError as e:
+            print(f"警告: 验证集分层抽样失败 ({e})，使用随机抽样")
+            train_paths, val_paths, train_labels, val_labels = train_test_split(
+                train_val_paths, train_val_labels,
+                test_size=actual_val_ratio,
+                stratify=None,
+                random_state=random_seed
+            )
+    else:
+        train_paths, train_labels = [], []
+        val_paths, val_labels = [], []
 
     print(f"训练集: {len(train_paths)}, 验证集: {len(val_paths)}, 测试集: {len(test_paths)}")
 
