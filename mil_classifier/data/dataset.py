@@ -1,6 +1,22 @@
 """
 数据集模块 - 用于MIL (Multiple Instance Learning)
 
+数据结构:
+    /rootdata/cancersort/
+        ├── patient_001/
+        │   ├── ultrasound/
+        │   │   ├── frame_001.jpg
+        │   │   ├── frame_002.jpg
+        │   │   └── ...
+        │   └── white_light/
+        │       ├── frame_001.jpg  (与ultrasound中的命名一致)
+        │       ├── frame_002.jpg
+        │       └── ...
+        ├── patient_002/
+        │   ├── ultrasound/
+        │   └── white_light/
+        └── ...
+
 每个病人是一个bag，包含多个帧
 每帧包含超声图像和白光图像
 """
@@ -8,13 +24,13 @@
 import os
 import cv2
 import numpy as np
-import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
 from PIL import Image
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 import random
+from sklearn.model_selection import train_test_split
 
 
 class EUSPreprocessor:
@@ -22,9 +38,9 @@ class EUSPreprocessor:
     超声图像预处理器
 
     将灰度超声图像转换为3通道:
-    - 通道1: 原始灰度
+    - 通道1: 原始灰度 (CLAHE增强)
     - 通道2: 边缘/梯度 (Canny或Sobel)
-    - 通道3: 深度/ROI增强
+    - 通道3: 深度/ROI增强 (形态学梯度)
     """
 
     def __init__(
@@ -81,22 +97,27 @@ class EUSPreprocessor:
         return output
 
 
-class MILDataset(Dataset):
+class FolderMILDataset(Dataset):
     """
-    MIL数据集
+    基于文件夹结构的MIL数据集
 
-    每个病人是一个bag，包含多个帧
-    每帧包含超声图像和白光图像
-
-    CSV格式:
-        patient_id,frame_id,eus_path,wli_path,label,frame_label
-        001,0,eus/001_0.jpg,wli/001_0.jpg,2,1
-        001,1,eus/001_1.jpg,wli/001_1.jpg,2,0
-        ...
+    数据结构:
+        data_root/
+            ├── patient_name_1/
+            │   ├── ultrasound/
+            │   │   ├── 001.jpg
+            │   │   └── ...
+            │   └── white_light/
+            │       ├── 001.jpg  (命名与ultrasound一致)
+            │       └── ...
+            └── ...
 
     Args:
         data_root: 数据根目录
-        csv_file: CSV文件路径
+        patient_ids: 病人ID列表 (文件夹名)
+        labels: 病人标签列表 (与patient_ids对应)
+        ultrasound_folder: 超声图像子文件夹名称
+        white_light_folder: 白光图像子文件夹名称
         transform_eus: 超声图像变换
         transform_wli: 白光图像变换
         max_frames: 每个bag最大帧数
@@ -106,7 +127,10 @@ class MILDataset(Dataset):
     def __init__(
         self,
         data_root: str,
-        csv_file: str,
+        patient_ids: List[str],
+        labels: List[int],
+        ultrasound_folder: str = 'ultrasound',
+        white_light_folder: str = 'white_light',
         transform_eus: Optional[Callable] = None,
         transform_wli: Optional[Callable] = None,
         max_frames: int = 32,
@@ -114,6 +138,10 @@ class MILDataset(Dataset):
         eus_preprocessor: Optional[EUSPreprocessor] = None
     ):
         self.data_root = Path(data_root)
+        self.patient_ids = patient_ids
+        self.labels = labels
+        self.ultrasound_folder = ultrasound_folder
+        self.white_light_folder = white_light_folder
         self.max_frames = max_frames
         self.transform_eus = transform_eus
         self.transform_wli = transform_wli
@@ -125,26 +153,52 @@ class MILDataset(Dataset):
         ]
         self.num_classes = len(self.class_names)
 
-        # 加载并按病人分组
-        csv_path = self.data_root / csv_file if not os.path.isabs(csv_file) else Path(csv_file)
-        self.df = pd.read_csv(csv_path)
-        self._group_by_patient()
-
-    def _group_by_patient(self):
-        """按病人ID分组"""
+        # 扫描每个病人的帧
         self.patients = []
         self.patient_labels = []
+        self._scan_patients()
 
-        for patient_id, group in self.df.groupby('patient_id'):
-            frames = group.to_dict('records')
+    def _scan_patients(self):
+        """扫描所有病人的帧"""
+        for patient_id, label in zip(self.patient_ids, self.labels):
+            patient_dir = self.data_root / patient_id
+            eus_dir = patient_dir / self.ultrasound_folder
+            wli_dir = patient_dir / self.white_light_folder
+
+            if not eus_dir.exists() or not wli_dir.exists():
+                print(f"警告: 病人 {patient_id} 缺少超声或白光文件夹，跳过")
+                continue
+
+            # 获取超声图像列表
+            eus_files = sorted([
+                f.name for f in eus_dir.iterdir()
+                if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp']
+            ])
+
+            # 获取白光图像列表
+            wli_files = sorted([
+                f.name for f in wli_dir.iterdir()
+                if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp']
+            ])
+
+            # 找到配对的帧 (同名文件)
+            common_frames = sorted(set(eus_files) & set(wli_files))
+
+            if len(common_frames) == 0:
+                print(f"警告: 病人 {patient_id} 没有配对的帧，跳过")
+                continue
+
             self.patients.append({
                 'patient_id': patient_id,
-                'frames': frames,
-                'label': frames[0]['label']  # 病人级标签
+                'frames': common_frames,
+                'label': label,
+                'eus_dir': eus_dir,
+                'wli_dir': wli_dir
             })
-            self.patient_labels.append(frames[0]['label'])
+            self.patient_labels.append(label)
 
         self.patient_labels = np.array(self.patient_labels)
+        print(f"加载了 {len(self.patients)} 个病人")
 
     def __len__(self) -> int:
         return len(self.patients)
@@ -158,33 +212,34 @@ class MILDataset(Dataset):
             - eus_frames: 超声帧 [N, C, H, W]
             - wli_frames: 白光帧 [N, C, H, W]
             - label: 病人级标签
-            - frame_labels: 帧级标签 [N] (如果有)
+            - frame_labels: 帧级标签 [N] (无标签时为-1)
             - mask: 有效帧掩码 [N]
             - patient_id: 病人ID
+            - num_frames: 实际帧数
         """
         patient = self.patients[idx]
-        frames = patient['frames']
+        frames = patient['frames'].copy()
+        original_num_frames = len(frames)
 
         # 随机采样或填充到max_frames
         if len(frames) > self.max_frames:
             # 随机采样
             indices = random.sample(range(len(frames)), self.max_frames)
-            indices.sort()  # 保持顺序
+            indices.sort()
             frames = [frames[i] for i in indices]
         elif len(frames) < self.max_frames:
-            # 需要填充的数量
+            # 填充
             pad_count = self.max_frames - len(frames)
-            frames = frames + [frames[-1]] * pad_count  # 用最后一帧填充
+            frames = frames + [frames[-1]] * pad_count
 
         # 加载图像
         eus_list = []
         wli_list = []
-        frame_labels = []
         mask = []
 
-        for i, frame in enumerate(frames):
+        for i, frame_name in enumerate(frames):
             # 超声图像
-            eus_path = self.data_root / frame['eus_path']
+            eus_path = patient['eus_dir'] / frame_name
             eus_img = cv2.imread(str(eus_path), cv2.IMREAD_COLOR)
             if eus_img is None:
                 eus_img = np.zeros((224, 224, 3), dtype=np.uint8)
@@ -194,7 +249,7 @@ class MILDataset(Dataset):
                 eus_img = self.eus_preprocessor(eus_img)
 
             # 白光图像
-            wli_path = self.data_root / frame['wli_path']
+            wli_path = patient['wli_dir'] / frame_name
             wli_img = cv2.imread(str(wli_path), cv2.IMREAD_COLOR)
             if wli_img is None:
                 wli_img = np.zeros((224, 224, 3), dtype=np.uint8)
@@ -219,19 +274,13 @@ class MILDataset(Dataset):
             eus_list.append(eus_img)
             wli_list.append(wli_img)
 
-            # 帧级标签 (如果有)
-            if 'frame_label' in frame:
-                frame_labels.append(frame['frame_label'])
-            else:
-                frame_labels.append(-1)  # 无标签
-
             # 掩码: 原始帧为True，填充帧为False
-            mask.append(i < len(patient['frames']))
+            mask.append(i < original_num_frames)
 
         # 堆叠
         eus_frames = torch.stack(eus_list)  # [N, C, H, W]
         wli_frames = torch.stack(wli_list)  # [N, C, H, W]
-        frame_labels = torch.tensor(frame_labels, dtype=torch.long)
+        frame_labels = torch.full((len(frames),), -1, dtype=torch.long)  # 无帧级标签
         mask = torch.tensor(mask, dtype=torch.bool)
 
         return {
@@ -241,11 +290,11 @@ class MILDataset(Dataset):
             'frame_labels': frame_labels,
             'mask': mask,
             'patient_id': patient['patient_id'],
-            'num_frames': min(len(patient['frames']), self.max_frames)
+            'num_frames': min(original_num_frames, self.max_frames)
         }
 
     def get_class_weights(self) -> torch.Tensor:
-        """计算类别权重"""
+        """计算类别权重 (用于处理类别不平衡)"""
         class_counts = np.bincount(self.patient_labels, minlength=self.num_classes)
         weights = 1.0 / (class_counts + 1e-6)
         weights = weights / weights.sum() * self.num_classes
@@ -262,12 +311,12 @@ class BalancedBatchSampler(Sampler):
     """
     平衡批次采样器
 
-    确保每个batch中包含所有类别的样本 (如果可能)
+    确保每个batch中包含各类别的样本
     """
 
     def __init__(
         self,
-        dataset: MILDataset,
+        dataset: FolderMILDataset,
         batch_size: int,
         drop_last: bool = False
     ):
@@ -307,7 +356,6 @@ class BalancedBatchSampler(Sampler):
 
             # 补充到batch_size
             if len(batch) < self.batch_size:
-                # 从有剩余的类别中随机采样
                 remaining = []
                 for indices in class_indices.values():
                     remaining.extend(indices)
@@ -331,11 +379,7 @@ class BalancedBatchSampler(Sampler):
 
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
-    """
-    自定义collate函数
-
-    处理不同病人帧数不同的情况
-    """
+    """自定义collate函数"""
     eus_frames = torch.stack([b['eus_frames'] for b in batch])
     wli_frames = torch.stack([b['wli_frames'] for b in batch])
     labels = torch.stack([b['label'] for b in batch])
@@ -355,11 +399,68 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     }
 
 
-def create_data_loaders(
+def scan_data_folder(
     data_root: str,
-    train_csv: str,
-    val_csv: str,
-    test_csv: Optional[str] = None,
+    label_mapping: Optional[Dict[str, int]] = None,
+    ultrasound_folder: str = 'ultrasound',
+    white_light_folder: str = 'white_light'
+) -> Tuple[List[str], List[int]]:
+    """
+    扫描数据文件夹，获取病人ID和标签
+
+    Args:
+        data_root: 数据根目录
+        label_mapping: 病人名称到标签的映射字典
+            如果为None，则从病人文件夹名称自动推断
+            (假设文件夹名格式为: "类别名_病人ID" 或直接提供映射)
+        ultrasound_folder: 超声子文件夹名
+        white_light_folder: 白光子文件夹名
+
+    Returns:
+        (patient_ids, labels)
+    """
+    data_root = Path(data_root)
+    patient_ids = []
+    labels = []
+
+    # 遍历所有子文件夹
+    for patient_dir in sorted(data_root.iterdir()):
+        if not patient_dir.is_dir():
+            continue
+
+        # 检查是否有超声和白光子文件夹
+        eus_dir = patient_dir / ultrasound_folder
+        wli_dir = patient_dir / white_light_folder
+
+        if not eus_dir.exists() or not wli_dir.exists():
+            continue
+
+        patient_id = patient_dir.name
+
+        # 获取标签
+        if label_mapping is not None:
+            if patient_id in label_mapping:
+                label = label_mapping[patient_id]
+            else:
+                print(f"警告: 病人 {patient_id} 没有标签映射，跳过")
+                continue
+        else:
+            # 默认标签为0 (需要用户提供label_mapping)
+            label = 0
+
+        patient_ids.append(patient_id)
+        labels.append(label)
+
+    return patient_ids, labels
+
+
+def create_data_loaders_from_folder(
+    data_root: str,
+    label_mapping: Dict[str, int],
+    ultrasound_folder: str = 'ultrasound',
+    white_light_folder: str = 'white_light',
+    val_ratio: float = 0.2,
+    test_ratio: float = 0.1,
     batch_size: int = 8,
     num_workers: int = 4,
     max_frames: int = 32,
@@ -367,47 +468,90 @@ def create_data_loaders(
     transform_wli_train: Optional[Callable] = None,
     transform_eus_val: Optional[Callable] = None,
     transform_wli_val: Optional[Callable] = None,
-    use_balanced_sampler: bool = True
+    use_balanced_sampler: bool = True,
+    class_names: Optional[List[str]] = None,
+    random_seed: int = 42
 ) -> Dict[str, DataLoader]:
     """
-    创建数据加载器
+    从文件夹创建数据加载器
 
     Args:
         data_root: 数据根目录
-        train_csv: 训练集CSV
-        val_csv: 验证集CSV
-        test_csv: 测试集CSV (可选)
+        label_mapping: 病人名称到标签的映射 {patient_name: label}
+        ultrasound_folder: 超声子文件夹名
+        white_light_folder: 白光子文件夹名
+        val_ratio: 验证集比例
+        test_ratio: 测试集比例
         batch_size: 批次大小
         num_workers: 工作进程数
         max_frames: 每个bag最大帧数
         transform_*: 数据变换
         use_balanced_sampler: 是否使用平衡采样器
+        class_names: 类别名称
+        random_seed: 随机种子
 
     Returns:
-        数据加载器字典
+        数据加载器字典 {'train': ..., 'val': ..., 'test': ...}
     """
+    # 扫描数据
+    patient_ids, labels = scan_data_folder(
+        data_root, label_mapping, ultrasound_folder, white_light_folder
+    )
+
+    print(f"共找到 {len(patient_ids)} 个病人")
+
+    # 划分数据集
+    # 先分出测试集
+    if test_ratio > 0:
+        train_val_ids, test_ids, train_val_labels, test_labels = train_test_split(
+            patient_ids, labels,
+            test_size=test_ratio,
+            stratify=labels,
+            random_state=random_seed
+        )
+    else:
+        train_val_ids, train_val_labels = patient_ids, labels
+        test_ids, test_labels = [], []
+
+    # 再分出验证集
+    actual_val_ratio = val_ratio / (1 - test_ratio) if test_ratio < 1 else val_ratio
+    train_ids, val_ids, train_labels, val_labels = train_test_split(
+        train_val_ids, train_val_labels,
+        test_size=actual_val_ratio,
+        stratify=train_val_labels,
+        random_state=random_seed
+    )
+
+    print(f"训练集: {len(train_ids)}, 验证集: {len(val_ids)}, 测试集: {len(test_ids)}")
+
     # 创建数据集
-    train_dataset = MILDataset(
+    train_dataset = FolderMILDataset(
         data_root=data_root,
-        csv_file=train_csv,
+        patient_ids=train_ids,
+        labels=train_labels,
+        ultrasound_folder=ultrasound_folder,
+        white_light_folder=white_light_folder,
         transform_eus=transform_eus_train,
         transform_wli=transform_wli_train,
-        max_frames=max_frames
+        max_frames=max_frames,
+        class_names=class_names
     )
 
-    val_dataset = MILDataset(
+    val_dataset = FolderMILDataset(
         data_root=data_root,
-        csv_file=val_csv,
+        patient_ids=val_ids,
+        labels=val_labels,
+        ultrasound_folder=ultrasound_folder,
+        white_light_folder=white_light_folder,
         transform_eus=transform_eus_val,
         transform_wli=transform_wli_val,
-        max_frames=max_frames
+        max_frames=max_frames,
+        class_names=class_names
     )
 
-    # 创建采样器
-    if use_balanced_sampler:
-        train_sampler = BalancedBatchSampler(
-            train_dataset, batch_size, drop_last=True
-        )
+    # 创建采样器和加载器
+    if use_balanced_sampler and len(train_dataset) > 0:
+        train_sampler = BalancedBatchSampler(train_dataset, batch_size, drop_last=True)
         train_loader = DataLoader(
             train_dataset,
             batch_sampler=train_sampler,
@@ -440,13 +584,18 @@ def create_data_loaders(
         'val': val_loader
     }
 
-    if test_csv:
-        test_dataset = MILDataset(
+    # 测试集
+    if len(test_ids) > 0:
+        test_dataset = FolderMILDataset(
             data_root=data_root,
-            csv_file=test_csv,
+            patient_ids=test_ids,
+            labels=test_labels,
+            ultrasound_folder=ultrasound_folder,
+            white_light_folder=white_light_folder,
             transform_eus=transform_eus_val,
             transform_wli=transform_wli_val,
-            max_frames=max_frames
+            max_frames=max_frames,
+            class_names=class_names
         )
         loaders['test'] = DataLoader(
             test_dataset,

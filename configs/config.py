@@ -10,12 +10,31 @@ from typing import List, Optional, Tuple
 
 @dataclass
 class DataConfig:
-    """数据配置"""
+    """数据配置 (文件夹结构)
+
+    数据目录结构:
+        data_root/
+            ├── patient_001/
+            │   ├── ultrasound/
+            │   │   └── *.jpg
+            │   └── white_light/
+            │       └── *.jpg (与ultrasound命名一致)
+            └── ...
+    """
     # 数据路径
-    data_root: str = "data"
-    train_csv: str = "train.csv"
-    val_csv: str = "val.csv"
-    test_csv: str = "test.csv"
+    data_root: str = "/rootdata/cancersort"
+    label_file: str = "labels.txt"  # 标签文件
+
+    # 文件夹结构
+    ultrasound_folder: str = "ultrasound"
+    white_light_folder: str = "white_light"
+
+    # 数据集划分
+    val_ratio: float = 0.2
+    test_ratio: float = 0.1
+
+    # MIL参数
+    max_frames: int = 32  # 每个病人最大帧数
 
     # 图像尺寸
     img_size: Tuple[int, int] = (224, 224)

@@ -27,13 +27,64 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mil_classifier.models import MultiModalMILClassifier, create_model
 from mil_classifier.data import (
-    create_data_loaders,
+    create_data_loaders_from_folder,
     get_eus_transforms,
     get_wli_transforms
 )
 from mil_classifier.losses import create_loss_function
 from mil_classifier.utils import MetricsCalculator, AverageMeter, EarlyStopping
 from configs.config import Config, get_config
+import json
+
+
+def load_label_mapping(label_file: str) -> Dict[str, int]:
+    """
+    加载标签映射文件
+
+    支持两种格式:
+    1. JSON: {"patient_name": label, ...}
+    2. TXT: 每行 "patient_name,label" 或 "patient_name label"
+
+    Args:
+        label_file: 标签文件路径
+
+    Returns:
+        {patient_name: label} 字典
+    """
+    label_file = Path(label_file)
+
+    if not label_file.exists():
+        raise FileNotFoundError(f"标签文件不存在: {label_file}")
+
+    label_mapping = {}
+
+    if label_file.suffix.lower() == '.json':
+        # JSON格式
+        with open(label_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            for patient, label in data.items():
+                label_mapping[patient] = int(label)
+
+    else:
+        # TXT格式 (CSV或空格分隔)
+        with open(label_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+
+                # 尝试逗号分隔
+                if ',' in line:
+                    parts = line.split(',')
+                else:
+                    parts = line.split()
+
+                if len(parts) >= 2:
+                    patient_name = parts[0].strip()
+                    label = int(parts[1].strip())
+                    label_mapping[patient_name] = label
+
+    return label_mapping
 
 
 def setup_logging(log_dir: str, experiment_name: str) -> logging.Logger:
@@ -253,20 +304,31 @@ def train(config: Config):
         is_training=False
     )
 
-    # 数据加载器
+    # 数据加载器 (文件夹结构)
     logger.info("加载数据...")
-    loaders = create_data_loaders(
+    logger.info(f"数据目录: {config.data.data_root}")
+
+    # 加载标签映射
+    label_mapping = load_label_mapping(config.data.label_file)
+    logger.info(f"加载了 {len(label_mapping)} 个病人的标签映射")
+
+    loaders = create_data_loaders_from_folder(
         data_root=config.data.data_root,
-        train_csv=config.data.train_csv,
-        val_csv=config.data.val_csv,
-        test_csv=config.data.test_csv if hasattr(config.data, 'test_csv') else None,
+        label_mapping=label_mapping,
+        ultrasound_folder=config.data.ultrasound_folder,
+        white_light_folder=config.data.white_light_folder,
+        val_ratio=config.data.val_ratio,
+        test_ratio=config.data.test_ratio,
         batch_size=config.training.batch_size,
         num_workers=config.training.num_workers,
+        max_frames=config.data.max_frames,
         transform_eus_train=transform_eus_train,
         transform_wli_train=transform_wli_train,
         transform_eus_val=transform_eus_val,
         transform_wli_val=transform_wli_val,
-        use_balanced_sampler=True
+        use_balanced_sampler=True,
+        class_names=config.data.class_names,
+        random_seed=config.seed
     )
 
     # 创建模型
@@ -426,15 +488,21 @@ def parse_args():
         description='训练多模态MIL肿瘤分类模型'
     )
 
-    # 数据参数
-    parser.add_argument('--data_root', type=str, default='data',
-                        help='数据根目录')
-    parser.add_argument('--train_csv', type=str, default='train.csv',
-                        help='训练集CSV')
-    parser.add_argument('--val_csv', type=str, default='val.csv',
-                        help='验证集CSV')
-    parser.add_argument('--test_csv', type=str, default=None,
-                        help='测试集CSV')
+    # 数据参数 (文件夹结构)
+    parser.add_argument('--data_root', type=str, default='/rootdata/cancersort',
+                        help='数据根目录 (包含病人文件夹)')
+    parser.add_argument('--label_file', type=str, required=True,
+                        help='标签文件 (JSON或TXT格式: patient_name,label)')
+    parser.add_argument('--ultrasound_folder', type=str, default='ultrasound',
+                        help='超声图像子文件夹名')
+    parser.add_argument('--white_light_folder', type=str, default='white_light',
+                        help='白光图像子文件夹名')
+    parser.add_argument('--val_ratio', type=float, default=0.2,
+                        help='验证集比例')
+    parser.add_argument('--test_ratio', type=float, default=0.1,
+                        help='测试集比例')
+    parser.add_argument('--max_frames', type=int, default=32,
+                        help='每个病人最大帧数')
 
     # 模型参数
     parser.add_argument('--backbone', type=str, default='resnet50',
@@ -480,17 +548,21 @@ def main():
     # 创建配置
     config = get_config()
 
-    # 更新配置
+    # 更新数据配置 (文件夹结构)
     config.data.data_root = args.data_root
-    config.data.train_csv = args.train_csv
-    config.data.val_csv = args.val_csv
-    if args.test_csv:
-        config.data.test_csv = args.test_csv
+    config.data.label_file = args.label_file
+    config.data.ultrasound_folder = args.ultrasound_folder
+    config.data.white_light_folder = args.white_light_folder
+    config.data.val_ratio = args.val_ratio
+    config.data.test_ratio = args.test_ratio
+    config.data.max_frames = args.max_frames
 
+    # 模型配置
     config.encoder.backbone = args.backbone
     config.fusion.fusion_type = args.fusion_type
     config.mil.pooling_type = args.mil_pooling
 
+    # 训练配置
     config.training.batch_size = args.batch_size
     config.training.num_epochs = args.epochs
     config.training.learning_rate = args.lr
