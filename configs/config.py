@@ -10,20 +10,23 @@ from typing import List, Optional, Tuple
 
 @dataclass
 class DataConfig:
-    """数据配置 (文件夹结构)
+    """数据配置 (文件夹结构，标签自动从类别文件夹名推断)
 
     数据目录结构:
         data_root/
-            ├── patient_001/
-            │   ├── ultrasound/
-            │   │   └── *.jpg
-            │   └── white_light/
-            │       └── *.jpg (与ultrasound命名一致)
+            ├── 平滑肌瘤/              # 类别文件夹 = 标签
+            │   ├── patient_001/
+            │   │   ├── ultrasound/
+            │   │   │   └── *.jpg
+            │   │   └── white_light/
+            │   │       └── *.jpg (与ultrasound命名一致)
+            │   └── ...
+            ├── 脂肪瘤/
+            │   └── ...
             └── ...
     """
     # 数据路径
     data_root: str = "/rootdata/cancersort"
-    label_file: str = "labels.txt"  # 标签文件
 
     # 文件夹结构
     ultrasound_folder: str = "ultrasound"

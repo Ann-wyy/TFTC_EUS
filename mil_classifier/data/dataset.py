@@ -1,24 +1,23 @@
 """
 数据集模块 - 用于MIL (Multiple Instance Learning)
 
-数据结构:
+数据结构 (按类别文件夹组织):
     /rootdata/cancersort/
-        ├── patient_001/
-        │   ├── ultrasound/
-        │   │   ├── frame_001.jpg
-        │   │   ├── frame_002.jpg
-        │   │   └── ...
-        │   └── white_light/
-        │       ├── frame_001.jpg  (与ultrasound中的命名一致)
-        │       ├── frame_002.jpg
+        ├── 平滑肌瘤/                    # 类别文件夹 (标签)
+        │   ├── patient_001/
+        │   │   ├── ultrasound/
+        │   │   │   ├── 001.jpg
+        │   │   │   └── ...
+        │   │   └── white_light/
+        │   │       ├── 001.jpg  (与ultrasound命名一致)
+        │   │       └── ...
+        │   └── patient_002/
         │       └── ...
-        ├── patient_002/
-        │   ├── ultrasound/
-        │   └── white_light/
+        ├── 脂肪瘤/
+        │   └── ...
         └── ...
 
-每个病人是一个bag，包含多个帧
-每帧包含超声图像和白光图像
+标签自动从类别文件夹名推断，无需额外的标签文件
 """
 
 import os
@@ -99,23 +98,23 @@ class EUSPreprocessor:
 
 class FolderMILDataset(Dataset):
     """
-    基于文件夹结构的MIL数据集
+    基于文件夹结构的MIL数据集 (按类别文件夹组织)
 
     数据结构:
         data_root/
-            ├── patient_name_1/
-            │   ├── ultrasound/
-            │   │   ├── 001.jpg
-            │   │   └── ...
-            │   └── white_light/
-            │       ├── 001.jpg  (命名与ultrasound一致)
-            │       └── ...
+            ├── 平滑肌瘤/              # 类别文件夹
+            │   ├── patient_001/
+            │   │   ├── ultrasound/
+            │   │   └── white_light/
+            │   └── ...
+            ├── 脂肪瘤/
+            │   └── ...
             └── ...
 
     Args:
         data_root: 数据根目录
-        patient_ids: 病人ID列表 (文件夹名)
-        labels: 病人标签列表 (与patient_ids对应)
+        patient_paths: 病人完整路径列表 (相对于data_root)
+        labels: 病人标签列表 (与patient_paths对应)
         ultrasound_folder: 超声图像子文件夹名称
         white_light_folder: 白光图像子文件夹名称
         transform_eus: 超声图像变换
@@ -127,7 +126,7 @@ class FolderMILDataset(Dataset):
     def __init__(
         self,
         data_root: str,
-        patient_ids: List[str],
+        patient_paths: List[str],
         labels: List[int],
         ultrasound_folder: str = 'ultrasound',
         white_light_folder: str = 'white_light',
@@ -138,7 +137,7 @@ class FolderMILDataset(Dataset):
         eus_preprocessor: Optional[EUSPreprocessor] = None
     ):
         self.data_root = Path(data_root)
-        self.patient_ids = patient_ids
+        self.patient_paths = patient_paths  # 相对路径: "类别/病人ID"
         self.labels = labels
         self.ultrasound_folder = ultrasound_folder
         self.white_light_folder = white_light_folder
@@ -160,13 +159,13 @@ class FolderMILDataset(Dataset):
 
     def _scan_patients(self):
         """扫描所有病人的帧"""
-        for patient_id, label in zip(self.patient_ids, self.labels):
-            patient_dir = self.data_root / patient_id
+        for patient_path, label in zip(self.patient_paths, self.labels):
+            patient_dir = self.data_root / patient_path
             eus_dir = patient_dir / self.ultrasound_folder
             wli_dir = patient_dir / self.white_light_folder
 
             if not eus_dir.exists() or not wli_dir.exists():
-                print(f"警告: 病人 {patient_id} 缺少超声或白光文件夹，跳过")
+                print(f"警告: 病人 {patient_path} 缺少超声或白光文件夹，跳过")
                 continue
 
             # 获取超声图像列表
@@ -185,11 +184,11 @@ class FolderMILDataset(Dataset):
             common_frames = sorted(set(eus_files) & set(wli_files))
 
             if len(common_frames) == 0:
-                print(f"警告: 病人 {patient_id} 没有配对的帧，跳过")
+                print(f"警告: 病人 {patient_path} 没有配对的帧，跳过")
                 continue
 
             self.patients.append({
-                'patient_id': patient_id,
+                'patient_id': patient_path,  # 保存完整路径作为ID
                 'frames': common_frames,
                 'label': label,
                 'eus_dir': eus_dir,
@@ -401,64 +400,99 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
 
 def scan_data_folder(
     data_root: str,
-    label_mapping: Optional[Dict[str, int]] = None,
+    class_names: Optional[List[str]] = None,
     ultrasound_folder: str = 'ultrasound',
     white_light_folder: str = 'white_light'
-) -> Tuple[List[str], List[int]]:
+) -> Tuple[List[str], List[int], List[str]]:
     """
-    扫描数据文件夹，获取病人ID和标签
+    扫描数据文件夹，自动从类别文件夹结构获取病人路径和标签
+
+    数据结构:
+        data_root/
+            ├── 平滑肌瘤/           # class_names[0]
+            │   ├── patient_001/
+            │   └── ...
+            ├── 脂肪瘤/             # class_names[1]
+            │   └── ...
+            └── ...
 
     Args:
         data_root: 数据根目录
-        label_mapping: 病人名称到标签的映射字典
-            如果为None，则从病人文件夹名称自动推断
-            (假设文件夹名格式为: "类别名_病人ID" 或直接提供映射)
+        class_names: 类别名称列表 (对应文件夹名)
+            如果为None，自动从文件夹名推断
         ultrasound_folder: 超声子文件夹名
         white_light_folder: 白光子文件夹名
 
     Returns:
-        (patient_ids, labels)
+        (patient_paths, labels, detected_class_names)
+        - patient_paths: 病人相对路径列表 ["类别/病人ID", ...]
+        - labels: 标签列表
+        - detected_class_names: 检测到的类别名称列表
     """
     data_root = Path(data_root)
-    patient_ids = []
+    patient_paths = []
     labels = []
 
-    # 遍历所有子文件夹
-    for patient_dir in sorted(data_root.iterdir()):
-        if not patient_dir.is_dir():
-            continue
-
-        # 检查是否有超声和白光子文件夹
-        eus_dir = patient_dir / ultrasound_folder
-        wli_dir = patient_dir / white_light_folder
-
-        if not eus_dir.exists() or not wli_dir.exists():
-            continue
-
-        patient_id = patient_dir.name
-
-        # 获取标签
-        if label_mapping is not None:
-            if patient_id in label_mapping:
-                label = label_mapping[patient_id]
-            else:
-                print(f"警告: 病人 {patient_id} 没有标签映射，跳过")
+    # 如果没有提供class_names，自动检测
+    if class_names is None:
+        # 查找所有包含病人数据的类别文件夹
+        detected_classes = []
+        for class_dir in sorted(data_root.iterdir()):
+            if not class_dir.is_dir():
                 continue
-        else:
-            # 默认标签为0 (需要用户提供label_mapping)
-            label = 0
+            # 检查是否有子文件夹包含ultrasound/white_light
+            for patient_dir in class_dir.iterdir():
+                if patient_dir.is_dir():
+                    eus_dir = patient_dir / ultrasound_folder
+                    wli_dir = patient_dir / white_light_folder
+                    if eus_dir.exists() and wli_dir.exists():
+                        detected_classes.append(class_dir.name)
+                        break
+        class_names = sorted(detected_classes)
+        print(f"自动检测到 {len(class_names)} 个类别: {class_names}")
 
-        patient_ids.append(patient_id)
-        labels.append(label)
+    # 创建类别到标签的映射
+    class_to_label = {name: idx for idx, name in enumerate(class_names)}
 
-    return patient_ids, labels
+    # 遍历类别文件夹
+    for class_name in class_names:
+        class_dir = data_root / class_name
+        if not class_dir.exists():
+            print(f"警告: 类别文件夹 {class_name} 不存在，跳过")
+            continue
+
+        label = class_to_label[class_name]
+
+        # 遍历该类别下的病人文件夹
+        for patient_dir in sorted(class_dir.iterdir()):
+            if not patient_dir.is_dir():
+                continue
+
+            # 检查是否有超声和白光子文件夹
+            eus_dir = patient_dir / ultrasound_folder
+            wli_dir = patient_dir / white_light_folder
+
+            if not eus_dir.exists() or not wli_dir.exists():
+                continue
+
+            # 相对路径: 类别/病人ID
+            patient_path = f"{class_name}/{patient_dir.name}"
+            patient_paths.append(patient_path)
+            labels.append(label)
+
+    print(f"共找到 {len(patient_paths)} 个病人")
+    for class_name in class_names:
+        count = sum(1 for p in patient_paths if p.startswith(class_name + "/"))
+        print(f"  - {class_name}: {count} 个病人")
+
+    return patient_paths, labels, class_names
 
 
 def create_data_loaders_from_folder(
     data_root: str,
-    label_mapping: Dict[str, int],
     ultrasound_folder: str = 'ultrasound',
     white_light_folder: str = 'white_light',
+    class_names: Optional[List[str]] = None,
     val_ratio: float = 0.2,
     test_ratio: float = 0.1,
     batch_size: int = 8,
@@ -469,17 +503,25 @@ def create_data_loaders_from_folder(
     transform_eus_val: Optional[Callable] = None,
     transform_wli_val: Optional[Callable] = None,
     use_balanced_sampler: bool = True,
-    class_names: Optional[List[str]] = None,
     random_seed: int = 42
-) -> Dict[str, DataLoader]:
+) -> Tuple[Dict[str, DataLoader], List[str]]:
     """
-    从文件夹创建数据加载器
+    从文件夹创建数据加载器 (自动从文件夹结构推断标签)
+
+    数据结构:
+        data_root/
+            ├── 平滑肌瘤/           # 类别文件夹 = 标签
+            │   ├── patient_001/
+            │   │   ├── ultrasound/
+            │   │   └── white_light/
+            │   └── ...
+            └── ...
 
     Args:
         data_root: 数据根目录
-        label_mapping: 病人名称到标签的映射 {patient_name: label}
         ultrasound_folder: 超声子文件夹名
         white_light_folder: 白光子文件夹名
+        class_names: 类别名称列表 (如果None则自动检测)
         val_ratio: 验证集比例
         test_ratio: 测试集比例
         batch_size: 批次大小
@@ -487,47 +529,49 @@ def create_data_loaders_from_folder(
         max_frames: 每个bag最大帧数
         transform_*: 数据变换
         use_balanced_sampler: 是否使用平衡采样器
-        class_names: 类别名称
         random_seed: 随机种子
 
     Returns:
-        数据加载器字典 {'train': ..., 'val': ..., 'test': ...}
+        (数据加载器字典, 类别名称列表)
+        - {'train': ..., 'val': ..., 'test': ...}
+        - class_names
     """
-    # 扫描数据
-    patient_ids, labels = scan_data_folder(
-        data_root, label_mapping, ultrasound_folder, white_light_folder
+    # 扫描数据 (自动检测类别)
+    patient_paths, labels, detected_class_names = scan_data_folder(
+        data_root, class_names, ultrasound_folder, white_light_folder
     )
 
-    print(f"共找到 {len(patient_ids)} 个病人")
+    # 使用检测到的类别名
+    class_names = detected_class_names
 
     # 划分数据集
     # 先分出测试集
     if test_ratio > 0:
-        train_val_ids, test_ids, train_val_labels, test_labels = train_test_split(
-            patient_ids, labels,
+        train_val_paths, test_paths, train_val_labels, test_labels = train_test_split(
+            patient_paths, labels,
             test_size=test_ratio,
             stratify=labels,
             random_state=random_seed
         )
     else:
-        train_val_ids, train_val_labels = patient_ids, labels
-        test_ids, test_labels = [], []
+        train_val_paths, train_val_labels = patient_paths, labels
+        test_paths, test_labels = [], []
 
     # 再分出验证集
     actual_val_ratio = val_ratio / (1 - test_ratio) if test_ratio < 1 else val_ratio
-    train_ids, val_ids, train_labels, val_labels = train_test_split(
-        train_val_ids, train_val_labels,
+    train_paths, val_paths, train_labels, val_labels = train_test_split(
+        train_val_paths, train_val_labels,
         test_size=actual_val_ratio,
         stratify=train_val_labels,
         random_state=random_seed
     )
 
-    print(f"训练集: {len(train_ids)}, 验证集: {len(val_ids)}, 测试集: {len(test_ids)}")
+    print(f"训练集: {len(train_paths)}, 验证集: {len(val_paths)}, 测试集: {len(test_paths)}")
 
     # 创建数据集
     train_dataset = FolderMILDataset(
         data_root=data_root,
-        patient_ids=train_ids,
+        patient_paths=train_paths,
         labels=train_labels,
         ultrasound_folder=ultrasound_folder,
         white_light_folder=white_light_folder,
@@ -539,7 +583,7 @@ def create_data_loaders_from_folder(
 
     val_dataset = FolderMILDataset(
         data_root=data_root,
-        patient_ids=val_ids,
+        patient_paths=val_paths,
         labels=val_labels,
         ultrasound_folder=ultrasound_folder,
         white_light_folder=white_light_folder,
@@ -585,10 +629,10 @@ def create_data_loaders_from_folder(
     }
 
     # 测试集
-    if len(test_ids) > 0:
+    if len(test_paths) > 0:
         test_dataset = FolderMILDataset(
             data_root=data_root,
-            patient_ids=test_ids,
+            patient_paths=test_paths,
             labels=test_labels,
             ultrasound_folder=ultrasound_folder,
             white_light_folder=white_light_folder,
@@ -606,4 +650,4 @@ def create_data_loaders_from_folder(
             pin_memory=True
         )
 
-    return loaders
+    return loaders, class_names

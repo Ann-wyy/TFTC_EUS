@@ -34,57 +34,6 @@ from mil_classifier.data import (
 from mil_classifier.losses import create_loss_function
 from mil_classifier.utils import MetricsCalculator, AverageMeter, EarlyStopping
 from configs.config import Config, get_config
-import json
-
-
-def load_label_mapping(label_file: str) -> Dict[str, int]:
-    """
-    加载标签映射文件
-
-    支持两种格式:
-    1. JSON: {"patient_name": label, ...}
-    2. TXT: 每行 "patient_name,label" 或 "patient_name label"
-
-    Args:
-        label_file: 标签文件路径
-
-    Returns:
-        {patient_name: label} 字典
-    """
-    label_file = Path(label_file)
-
-    if not label_file.exists():
-        raise FileNotFoundError(f"标签文件不存在: {label_file}")
-
-    label_mapping = {}
-
-    if label_file.suffix.lower() == '.json':
-        # JSON格式
-        with open(label_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            for patient, label in data.items():
-                label_mapping[patient] = int(label)
-
-    else:
-        # TXT格式 (CSV或空格分隔)
-        with open(label_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-
-                # 尝试逗号分隔
-                if ',' in line:
-                    parts = line.split(',')
-                else:
-                    parts = line.split()
-
-                if len(parts) >= 2:
-                    patient_name = parts[0].strip()
-                    label = int(parts[1].strip())
-                    label_mapping[patient_name] = label
-
-    return label_mapping
 
 
 def setup_logging(log_dir: str, experiment_name: str) -> logging.Logger:
@@ -304,19 +253,16 @@ def train(config: Config):
         is_training=False
     )
 
-    # 数据加载器 (文件夹结构)
+    # 数据加载器 (文件夹结构，自动从类别文件夹推断标签)
     logger.info("加载数据...")
     logger.info(f"数据目录: {config.data.data_root}")
+    logger.info("标签自动从类别文件夹名推断")
 
-    # 加载标签映射
-    label_mapping = load_label_mapping(config.data.label_file)
-    logger.info(f"加载了 {len(label_mapping)} 个病人的标签映射")
-
-    loaders = create_data_loaders_from_folder(
+    loaders, detected_class_names = create_data_loaders_from_folder(
         data_root=config.data.data_root,
-        label_mapping=label_mapping,
         ultrasound_folder=config.data.ultrasound_folder,
         white_light_folder=config.data.white_light_folder,
+        class_names=config.data.class_names if config.data.class_names else None,
         val_ratio=config.data.val_ratio,
         test_ratio=config.data.test_ratio,
         batch_size=config.training.batch_size,
@@ -327,9 +273,13 @@ def train(config: Config):
         transform_eus_val=transform_eus_val,
         transform_wli_val=transform_wli_val,
         use_balanced_sampler=True,
-        class_names=config.data.class_names,
         random_seed=config.seed
     )
+
+    # 更新配置中的类别名称
+    config.data.class_names = detected_class_names
+    config.data.num_classes = len(detected_class_names)
+    logger.info(f"检测到 {config.data.num_classes} 个类别: {config.data.class_names}")
 
     # 创建模型
     logger.info("创建模型...")
@@ -488,11 +438,9 @@ def parse_args():
         description='训练多模态MIL肿瘤分类模型'
     )
 
-    # 数据参数 (文件夹结构)
+    # 数据参数 (文件夹结构，标签自动从类别文件夹名推断)
     parser.add_argument('--data_root', type=str, default='/rootdata/cancersort',
-                        help='数据根目录 (包含病人文件夹)')
-    parser.add_argument('--label_file', type=str, required=True,
-                        help='标签文件 (JSON或TXT格式: patient_name,label)')
+                        help='数据根目录 (结构: data_root/类别名/病人/ultrasound+white_light)')
     parser.add_argument('--ultrasound_folder', type=str, default='ultrasound',
                         help='超声图像子文件夹名')
     parser.add_argument('--white_light_folder', type=str, default='white_light',
@@ -548,9 +496,8 @@ def main():
     # 创建配置
     config = get_config()
 
-    # 更新数据配置 (文件夹结构)
+    # 更新数据配置 (文件夹结构，标签自动推断)
     config.data.data_root = args.data_root
-    config.data.label_file = args.label_file
     config.data.ultrasound_folder = args.ultrasound_folder
     config.data.white_light_folder = args.white_light_folder
     config.data.val_ratio = args.val_ratio
