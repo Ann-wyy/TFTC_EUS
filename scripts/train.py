@@ -154,6 +154,7 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
         feature_dim=config.encoder.feature_dim,
         num_classes=len(class_names),
         pretrained=True,
+        eus_channels=config.data.eus_channels,
     ).to(device)
 
     criterion_bag = nn.CrossEntropyLoss()

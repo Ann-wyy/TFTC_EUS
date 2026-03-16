@@ -228,7 +228,7 @@ class UltrasoundEncoder(BaseEncoder):
     """
     超声编码器
 
-    输入: 3通道超声图像 (灰度 + 边缘/梯度 + 深度/ROI)
+    输入: N通道超声图像 (由数据预处理决定通道数)
     输出: 帧级特征向量
     """
 
@@ -237,6 +237,7 @@ class UltrasoundEncoder(BaseEncoder):
         backbone: str = 'resnet50',
         pretrained: bool = True,
         feature_dim: int = 512,
+        input_channels: int = 3,
         freeze_early_layers: bool = True,
         freeze_until_layer: int = 2
     ):
@@ -244,7 +245,7 @@ class UltrasoundEncoder(BaseEncoder):
             backbone=backbone,
             pretrained=pretrained,
             feature_dim=feature_dim,
-            input_channels=3,  # 灰度 + 边缘 + 深度
+            input_channels=input_channels,
             freeze_early_layers=freeze_early_layers,
             freeze_until_layer=freeze_until_layer
         )

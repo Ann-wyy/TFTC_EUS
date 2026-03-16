@@ -153,7 +153,8 @@ class MultiModalMILClassifier(nn.Module):
         feature_dim=512,
         num_classes=6,
         pretrained=True,
-        k=5
+        k=5,
+        eus_channels=3,
     ):
 
         super().__init__()
@@ -162,7 +163,8 @@ class MultiModalMILClassifier(nn.Module):
         self.eus_encoder = UltrasoundEncoder(
             backbone,
             pretrained=pretrained,
-            feature_dim=feature_dim
+            feature_dim=feature_dim,
+            input_channels=eus_channels,
         )
 
         self.wli_encoder = WhiteLightEncoder(

@@ -42,8 +42,8 @@ class DataConfig:
     # 图像尺寸
     img_size: Tuple[int, int] = (224, 224)
 
-    # 超声图像通道: 灰度 + 边缘 + 深度/ROI
-    eus_channels: int = 3
+    # 超声图像通道: 由npy预处理决定 (实际为5通道)
+    eus_channels: int = 5
     # 白光图像通道: RGB
     wli_channels: int = 3
 
