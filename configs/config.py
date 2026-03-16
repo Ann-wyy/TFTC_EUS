@@ -10,23 +10,21 @@ from typing import List, Optional, Tuple
 
 @dataclass
 class DataConfig:
-    """数据配置 (文件夹结构，标签自动从类别文件夹名推断)
+    """数据配置 (文件夹结构)
 
     数据目录结构:
         data_root/
-            ├── 平滑肌瘤/              # 类别文件夹 = 标签
-            │   ├── patient_001/
-            │   │   ├── ultrasound/
-            │   │   │   └── *.jpg
-            │   │   └── white_light/
-            │   │       └── *.jpg (与ultrasound命名一致)
-            │   └── ...
-            ├── 脂肪瘤/
-            │   └── ...
+            ├── patient_001/
+            │   ├── ultrasound/
+            │   │   └── *.jpg
+            │   └── white_light/
+            │       └── *.jpg (与ultrasound命名一致)
             └── ...
     """
     # 数据路径
-    data_root: str = "/rootdata/cancersort"
+    wli_root: str = "/data/truenas_B2/yyi/data/SMT_DATA/SMT_Frame_EUS_WL_v1"
+    eus_root: str = "/data/truenas_B2/yyi/data/SMT_DATA/SMT_EUS_Procee"
+    # label_file: str = "labels.txt"  # 标签文件
 
     # 文件夹结构
     ultrasound_folder: str = "ultrasound"
@@ -37,19 +35,19 @@ class DataConfig:
     test_ratio: float = 0.1
 
     # MIL参数
-    max_frames: int = 32  # 每个病人最大帧数
+    max_frames: int = 15 # 每个病人最大帧数
 
     # 图像尺寸
     img_size: Tuple[int, int] = (224, 224)
 
-    # 超声图像通道: 由npy预处理决定 (实际为5通道)
+    # 超声图像通道: 灰度 + 边缘 + 深度/ROI
     eus_channels: int = 5
     # 白光图像通道: RGB
     wli_channels: int = 3
 
-    # 病理类别 (自动从文件夹检测，无需手动指定)
-    num_classes: int = 0  # 自动检测
-    class_names: Optional[List[str]] = None  # 自动从文件夹名检测
+    # 病理类别
+    num_classes: int = 6
+    class_names: Optional[List[str]] = None
 
     # 归一化参数 (ImageNet)
     normalize_mean: Tuple[float, float, float] = (0.485, 0.456, 0.406)
@@ -145,13 +143,13 @@ class AugmentationConfig:
 class TrainingConfig:
     """训练配置"""
     # 基本参数
-    batch_size: int = 8  # 每个batch的病人数
+    batch_size: int = 32  # 每个batch的病人数
     num_epochs: int = 100
-    num_workers: int = 4
+    num_workers: int = 8
 
     # 优化器
     optimizer: str = "adamw"
-    learning_rate: float = 1e-4
+    learning_rate: float = 1e-5
     weight_decay: float = 0.01
 
     # 学习率调度
@@ -176,7 +174,7 @@ class TrainingConfig:
     max_grad_norm: float = 1.0
 
     # 检查点
-    checkpoint_dir: str = "checkpoints"
+    log_dir: str = "/data/truenas_B2/yyi/TFTC_EUS/checkpoints/logs"
     save_best_only: bool = True
 
 
