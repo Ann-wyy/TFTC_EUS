@@ -96,7 +96,8 @@ class CLAMMIL(nn.Module):
         A = self.attn_w(A_V * A_U).squeeze(-1)
 
         if mask is not None:
-            A = A.masked_fill(~mask, -1e9)
+            fill_value = torch.finfo(A.dtype).min  # FP16 时约 -65504
+            A = A.masked_fill(~mask, fill_value)
 
         A = torch.softmax(A, dim=1)
 
