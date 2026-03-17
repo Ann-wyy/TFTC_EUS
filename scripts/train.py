@@ -70,6 +70,7 @@ class MetricLogger:
             self.loss_instance_list.append(loss_dict.get('instance', 0))
 
     def compute(self):
+        from sklearn.metrics import confusion_matrix
         patient_logits = torch.cat(self.patient_logits_list, dim=0)
         patient_labels = torch.cat(self.patient_labels_list, dim=0)
         preds = torch.argmax(patient_logits, dim=-1).numpy()
@@ -82,7 +83,17 @@ class MetricLogger:
 
         per_class_report = None
         if self.class_names:
-            per_class_report = classification_report(targets, preds, target_names=self.class_names, zero_division=0, output_dict=True)
+            report = classification_report(
+                targets, preds, target_names=self.class_names,
+                zero_division=0, output_dict=True
+            )
+            # 为每个类别补充每类 Acc = TP / (该类总样本数)
+            cm = confusion_matrix(targets, preds, labels=list(range(len(self.class_names))))
+            per_class_acc = cm.diagonal() / cm.sum(axis=1).clip(min=1)
+            for i, name in enumerate(self.class_names):
+                if name in report:
+                    report[name]['accuracy'] = float(per_class_acc[i])
+            per_class_report = report
 
         metrics = {
             'accuracy': acc,
@@ -102,6 +113,42 @@ class MetricLogger:
         self.loss_total_list.clear()
         self.loss_patient_list.clear()
         self.loss_instance_list.clear()
+
+# ----------------------------
+# Per-class metric logging
+# ----------------------------
+def log_per_class_metrics(metrics: dict, phase: str, logger: logging.Logger):
+    """将每类的 Acc / Precision / Recall / F1 以对齐表格形式写入 logger。"""
+    per_class = metrics.get('per_class')
+    if not per_class:
+        return
+    # 跳过 sklearn 自动附加的 avg 行和 accuracy 标量
+    skip = {'accuracy', 'macro avg', 'weighted avg'}
+    header = f"{'Class':<25} {'Acc':>7} {'Prec':>7} {'Rec':>7} {'F1':>7} {'Support':>8}"
+    rows = [header, '-' * len(header)]
+    for cls, vals in per_class.items():
+        if cls in skip or not isinstance(vals, dict):
+            continue
+        rows.append(
+            f"{cls:<25} "
+            f"{vals.get('accuracy', 0.0):>7.3f} "
+            f"{vals['precision']:>7.3f} "
+            f"{vals['recall']:>7.3f} "
+            f"{vals['f1-score']:>7.3f} "
+            f"{int(vals['support']):>8}"
+        )
+    # macro 平均行
+    macro = per_class.get('macro avg', {})
+    rows.append(
+        f"{'[macro avg]':<25} "
+        f"{'':>7} "
+        f"{macro.get('precision', 0.0):>7.3f} "
+        f"{macro.get('recall', 0.0):>7.3f} "
+        f"{macro.get('f1-score', 0.0):>7.3f} "
+        f"{int(macro.get('support', 0)):>8}"
+    )
+    logger.info(f"\n[{phase}] Per-class metrics:\n" + "\n".join(rows))
+
 
 # ----------------------------
 # K-Fold Loader
@@ -267,10 +314,19 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
         metric_logger.reset()
         scheduler.step()
 
-        logger.info(f"Epoch {epoch+1}/{config.training.num_epochs} | "
-                    f"Train Loss {train_metrics['loss_total']:.4f} | "
-                    f"Val Loss {val_metrics['loss_total']:.4f} | "
-                    f"Val Acc {val_metrics['accuracy']*100:.2f}%")
+        logger.info(
+            f"Epoch {epoch+1}/{config.training.num_epochs} | "
+            f"Train Loss {train_metrics['loss_total']:.4f} "
+            f"Acc {train_metrics['accuracy']*100:.2f}% "
+            f"F1 {train_metrics['f1']:.4f} | "
+            f"Val Loss {val_metrics['loss_total']:.4f} "
+            f"Acc {val_metrics['accuracy']*100:.2f}% "
+            f"P {val_metrics['precision']:.4f} "
+            f"R {val_metrics['recall']:.4f} "
+            f"F1 {val_metrics['f1']:.4f}"
+        )
+        log_per_class_metrics(train_metrics, f"Train Epoch {epoch+1}", logger)
+        log_per_class_metrics(val_metrics, f"Val   Epoch {epoch+1}", logger)
 
         if val_metrics['accuracy'] > best_acc:
             best_acc = val_metrics['accuracy']

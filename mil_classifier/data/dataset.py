@@ -1,3 +1,4 @@
+import logging
 import torch
 from torch.utils.data import Dataset
 from pathlib import Path
@@ -6,6 +7,8 @@ import numpy as np
 from typing import Callable, Optional, Tuple, List
 import torch.nn.functional as F
 import random
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------
 # Dataset for preprocessed EUS + WLI
@@ -168,7 +171,7 @@ def scan_data_folder(data_root: str) -> Tuple[List[str], List[int], List[str]]:
                 paths.append(relative_path)
                 labels.append(label_idx)
 
-    print(f"Successfully scanned {len(class_names)} classes: {class_names}")
-    print(f"Total patients found: {len(paths)}")
+    logger.info(f"Scanned {len(class_names)} classes: {class_names}")
+    logger.info(f"Total patients found: {len(paths)}")
 
     return paths, labels, class_names
