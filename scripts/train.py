@@ -216,14 +216,19 @@ def create_kfold_loaders(config, k=5, random_seed=42):
             val_ds, batch_size=config.training.batch_size, shuffle=False,
             num_workers=config.training.num_workers, collate_fn=collate_fn
         )
-        loaders_per_fold.append({'train': train_loader, 'val': val_loader})
+        loaders_per_fold.append({
+            'train': train_loader,
+            'val': val_loader,
+            'train_labels': [labels[i] for i in train_idx],
+        })
 
     return loaders_per_fold, class_names
 
 # ----------------------------
 # Fold Training
 # ----------------------------
-def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, logger):
+def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, logger, train_labels=None):
+    from sklearn.utils.class_weight import compute_class_weight
     device = torch.device(config.device if torch.cuda.is_available() else 'cpu')
     logger.info(f"\n===== Fold {fold_idx+1} / 5 ===== | Device: {device}")
 
@@ -235,10 +240,25 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
         eus_channels=config.data.eus_channels,
     ).to(device)
 
+    # 计算 class weights（基于当前折训练集样本分布）
+    if train_labels is not None:
+        train_labels_np = np.array(train_labels)
+        cw = compute_class_weight(
+            class_weight='balanced',
+            classes=np.arange(len(class_names)),
+            y=train_labels_np
+        )
+        class_weights = cw.tolist()
+        logger.info(f"Fold {fold_idx+1} class_weights: " +
+                    ", ".join(f"{class_names[i]}={w:.3f}" for i, w in enumerate(class_weights)))
+    else:
+        class_weights = config.training.class_weights
+
     # 使用配置的 loss_type（focal / class_balanced / ce），关闭无帧级标签的辅助任务
     criterion = create_loss_function(
         loss_type=config.training.loss_type,
         num_classes=len(class_names),
+        class_weights=class_weights,
         gamma=config.training.focal_gamma,
         auxiliary_weight=config.classifier.auxiliary_weight,
         use_auxiliary=False,  # 无帧级标注，关闭辅助任务避免错误监督
@@ -375,7 +395,8 @@ def main():
         logger.info(f"\n===== Training Fold {fold_idx+1} =====")
         train_loader = loaders['train']
         val_loader = loaders['val']
-        acc = train_fold(config, fold_idx, train_loader, val_loader, class_names, logger)
+        acc = train_fold(config, fold_idx, train_loader, val_loader, class_names, logger,
+                         train_labels=loaders.get('train_labels'))
         fold_accuracies.append(acc)
         logger.info(f"Fold {fold_idx+1} Accuracy: {acc*100:.2f}%")
 
