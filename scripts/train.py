@@ -357,7 +357,41 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
             logger.info(f"Early stopping at epoch {epoch+1}")
             break
 
-    return best_acc
+    # ---- 加载最佳模型并重新验证，得到最终 fold 指标 ----
+    best_ckpt = log_dir / 'best_model.pth'
+    if best_ckpt.exists():
+        model.load_state_dict(torch.load(best_ckpt, map_location=device))
+        logger.info(f"Loaded best checkpoint for final evaluation: {best_ckpt}")
+
+    model.eval()
+    final_logger = MetricLogger(class_names)
+    with torch.no_grad():
+        for batch in val_loader:
+            eus_frames = batch['eus_frames'].to(device)
+            wli_frames = batch['wli_frames'].to(device)
+            labels     = batch['labels'].to(device)
+            masks      = batch['mask'].to(device)
+            outputs = model(eus_frames, wli_frames, masks)
+            patient_logits = outputs['patient_logits']
+            loss_dict = criterion(patient_logits, labels)
+            final_logger.update(patient_logits, labels, {
+                'total':    loss_dict['total'].item(),
+                'patient':  loss_dict['patient'].item(),
+                'instance': loss_dict['frame'].item(),
+            })
+
+    final_metrics = final_logger.compute()
+    logger.info(
+        f"[Fold {fold_idx+1} BEST MODEL] "
+        f"Val Loss {final_metrics['loss_total']:.4f} "
+        f"Acc {final_metrics['accuracy']*100:.2f}% "
+        f"P {final_metrics['precision']:.4f} "
+        f"R {final_metrics['recall']:.4f} "
+        f"F1 {final_metrics['f1']:.4f}"
+    )
+    log_per_class_metrics(final_metrics, f"Fold {fold_idx+1} BEST", logger)
+
+    return final_metrics['accuracy']
 
 # ----------------------------
 # Main
