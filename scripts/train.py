@@ -28,6 +28,8 @@ from sklearn.metrics import precision_score, recall_score, f1_score, classificat
 
 from mil_classifier.models import MultiModalMILClassifier
 from mil_classifier.data.dataset import FolderMILDatasetPreprocessed, collate_fn
+from mil_classifier.data.augmentation import get_wli_transforms
+from mil_classifier.losses.losses import create_loss_function
 from mil_classifier.utils import EarlyStopping
 from configs.config import Config, get_config
 
@@ -110,6 +112,29 @@ def create_kfold_loaders(config, k=5, random_seed=42):
     paths, labels, class_names = scan_data_folder(wli_root)
     labels_np = np.array(labels)
 
+    aug_cfg = {
+        'horizontal_flip': config.augmentation.random_horizontal_flip,
+        'vertical_flip': config.augmentation.random_vertical_flip,
+        'rotation': config.augmentation.random_rotation,
+        'brightness': config.augmentation.wli_brightness,
+        'contrast': config.augmentation.wli_contrast,
+        'saturation': config.augmentation.wli_saturation,
+        'hue': config.augmentation.wli_hue,
+    }
+    train_transform = get_wli_transforms(
+        img_size=config.data.img_size,
+        is_training=True,
+        normalize_mean=config.data.normalize_mean,
+        normalize_std=config.data.normalize_std,
+        config=aug_cfg,
+    )
+    val_transform = get_wli_transforms(
+        img_size=config.data.img_size,
+        is_training=False,
+        normalize_mean=config.data.normalize_mean,
+        normalize_std=config.data.normalize_std,
+    )
+
     skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=random_seed)
     loaders_per_fold = []
 
@@ -120,7 +145,10 @@ def create_kfold_loaders(config, k=5, random_seed=42):
             patient_paths=[paths[i] for i in train_idx],
             labels=[labels[i] for i in train_idx],
             max_frames=config.data.max_frames,
-            img_size=config.data.img_size
+            img_size=config.data.img_size,
+            transform_wli=train_transform,
+            wli_subfolder=config.data.white_light_folder,
+            is_training=True,
         )
         val_ds = FolderMILDatasetPreprocessed(
             eus_root=config.data.eus_root,
@@ -128,7 +156,10 @@ def create_kfold_loaders(config, k=5, random_seed=42):
             patient_paths=[paths[i] for i in val_idx],
             labels=[labels[i] for i in val_idx],
             max_frames=config.data.max_frames,
-            img_size=config.data.img_size
+            img_size=config.data.img_size,
+            transform_wli=val_transform,
+            wli_subfolder=config.data.white_light_folder,
+            is_training=False,
         )
         train_loader = torch.utils.data.DataLoader(
             train_ds, batch_size=config.training.batch_size, shuffle=True,
@@ -157,8 +188,15 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
         eus_channels=config.data.eus_channels,
     ).to(device)
 
-    criterion_bag = nn.CrossEntropyLoss()
-    criterion_instance = nn.CrossEntropyLoss()
+    # 使用配置的 loss_type（focal / class_balanced / ce），关闭无帧级标签的辅助任务
+    criterion = create_loss_function(
+        loss_type=config.training.loss_type,
+        num_classes=len(class_names),
+        gamma=config.training.focal_gamma,
+        auxiliary_weight=config.classifier.auxiliary_weight,
+        use_auxiliary=False,  # 无帧级标注，关闭辅助任务避免错误监督
+    )
+
     optimizer = AdamW(model.parameters(), lr=config.training.learning_rate, weight_decay=config.training.weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=config.training.num_epochs)
     scaler = GradScaler() if config.training.use_amp else None
@@ -176,28 +214,14 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
             wli_frames = batch['wli_frames'].to(device)
             labels = batch['labels'].to(device)
             masks = batch['mask'].to(device)
-            print("-" * 30)
-            print(f"EUS Tensor 原始形状: {eus_frames.shape}")
-            B, N, Ce, H, W = eus_frames.shape
-            print(f"传入的参数 - B: {B}, N: {N}, Ce: {Ce}, H: {H}, W: {W}")
-            print(f"预期总量: {B * N * Ce * H * W}")
-            print(f"实际总量: {eus_frames.numel()}")
-            print("-" * 30)
 
             optimizer.zero_grad()
             if scaler:
                 with autocast(device_type='cuda'):
                     outputs = model(eus_frames, wli_frames, masks)
                     patient_logits = outputs['patient_logits']
-                    instance_logits = outputs.get('instance_logits')
-                    loss_bag = criterion_bag(patient_logits, labels)
-                    loss_instance = torch.tensor(0.0, device=device)
-                    if instance_logits is not None:
-                        B, N, C = instance_logits.shape
-                        instance_labels = labels.unsqueeze(1).repeat(1, N).view(-1)
-                        mask_flat = masks.view(-1)
-                        loss_instance = criterion_instance(instance_logits.view(B*N, C)[mask_flat], instance_labels[mask_flat])
-                    loss_total = loss_bag + config.classifier.auxiliary_weight * loss_instance
+                    loss_dict = criterion(patient_logits, labels)
+                    loss_total = loss_dict['total']
                 scaler.scale(loss_total).backward()
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
@@ -206,21 +230,17 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
             else:
                 outputs = model(eus_frames, wli_frames, masks)
                 patient_logits = outputs['patient_logits']
-                instance_logits = outputs.get('instance_logits')
-                loss_bag = criterion_bag(patient_logits, labels)
-                loss_instance = torch.tensor(0.0, device=device)
-                if instance_logits is not None:
-                    B, N, C = instance_logits.shape
-                    instance_labels = labels.unsqueeze(1).repeat(1, N).view(-1)
-                    mask_flat = masks.view(-1)
-                    loss_instance = criterion_instance(instance_logits.view(B*N, C)[mask_flat], instance_labels[mask_flat])
-                loss_total = loss_bag + config.classifier.auxiliary_weight * loss_instance
+                loss_dict = criterion(patient_logits, labels)
+                loss_total = loss_dict['total']
                 loss_total.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
                 optimizer.step()
 
-            metric_logger.update(patient_logits, labels,
-                                 {'total': loss_total.item(), 'patient': loss_bag.item(), 'instance': loss_instance.item()})
+            metric_logger.update(patient_logits, labels, {
+                'total': loss_dict['total'].item(),
+                'patient': loss_dict['patient'].item(),
+                'instance': loss_dict['frame'].item(),
+            })
 
         train_metrics = metric_logger.compute()
         metric_logger.reset()
@@ -236,17 +256,12 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
                 masks = batch['mask'].to(device)
                 outputs = model(eus_frames, wli_frames, masks)
                 patient_logits = outputs['patient_logits']
-                instance_logits = outputs.get('instance_logits')
-                loss_bag = criterion_bag(patient_logits, labels)
-                loss_instance = torch.tensor(0.0, device=device)
-                if instance_logits is not None:
-                    B, N, C = instance_logits.shape
-                    instance_labels = labels.unsqueeze(1).repeat(1, N).view(-1)
-                    mask_flat = masks.view(-1)
-                    loss_instance = criterion_instance(instance_logits.view(B*N, C)[mask_flat], instance_labels[mask_flat])
-                loss_total = loss_bag + config.classifier.auxiliary_weight * loss_instance
-                metric_logger.update(patient_logits, labels,
-                                     {'total': loss_total.item(), 'patient': loss_bag.item(), 'instance': loss_instance.item()})
+                loss_dict = criterion(patient_logits, labels)
+                metric_logger.update(patient_logits, labels, {
+                    'total': loss_dict['total'].item(),
+                    'patient': loss_dict['patient'].item(),
+                    'instance': loss_dict['frame'].item(),
+                })
 
         val_metrics = metric_logger.compute()
         metric_logger.reset()

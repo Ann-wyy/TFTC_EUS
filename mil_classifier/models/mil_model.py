@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from typing import Optional
 
 from .encoders import UltrasoundEncoder, WhiteLightEncoder
+from .fusion import CrossAttentionFusion
 
 
 # --------------------------------------------------
@@ -63,31 +64,6 @@ class FrameTransformer(nn.Module):
             key_padding_mask = ~mask.bool()
 
         return self.encoder(x, src_key_padding_mask=key_padding_mask)
-
-
-# --------------------------------------------------
-# Cross Modal Transformer
-# --------------------------------------------------
-
-class CrossModalTransformer(nn.Module):
-
-    def __init__(self, dim=512, heads=8):
-
-        super().__init__()
-
-        self.attn = nn.MultiheadAttention(
-            dim,
-            heads,
-            batch_first=True
-        )
-
-        self.norm = nn.LayerNorm(dim)
-
-    def forward(self, eus, wli):
-
-        fused, _ = self.attn(eus, wli, wli)
-
-        return self.norm(eus + fused)
 
 
 # --------------------------------------------------
@@ -177,8 +153,14 @@ class MultiModalMILClassifier(nn.Module):
         self.eus_transformer = FrameTransformer(feature_dim)
         self.wli_transformer = FrameTransformer(feature_dim)
 
-        # cross modal fusion
-        self.cross_modal = CrossModalTransformer(feature_dim)
+        # cross modal fusion — 双向 CrossAttentionFusion
+        self.cross_modal = CrossAttentionFusion(
+            dim=feature_dim,
+            num_heads=8,
+            num_layers=2,
+            dropout=0.1,
+            output_dim=feature_dim,
+        )
 
         # CLAM MIL
         self.mil = CLAMMIL(
@@ -218,8 +200,8 @@ class MultiModalMILClassifier(nn.Module):
         eus_feat = self.eus_transformer(eus_feat, masks)
         wli_feat = self.wli_transformer(wli_feat, masks)
 
-        # cross modal fusion
-        fused = self.cross_modal(eus_feat, wli_feat)
+        # cross modal fusion (双向，返回 tuple: fused, attn_weights)
+        fused, _ = self.cross_modal(eus_feat, wli_feat)
 
         # MIL pooling
         bag_feat, attn, inst_logits = self.mil(fused, masks)
