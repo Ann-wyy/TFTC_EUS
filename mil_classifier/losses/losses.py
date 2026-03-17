@@ -102,11 +102,21 @@ class MILLoss(nn.Module):
     """
     MIL Loss = patient_loss + λ * frame_loss
     """
-    def __init__(self, patient_loss: nn.Module, auxiliary_weight: float = 0.3, use_auxiliary: bool = True):
+    def __init__(self, patient_loss: nn.Module, auxiliary_weight: float = 0.3,
+                 use_auxiliary: bool = True, label_smoothing: float = 0.0,
+                 num_classes: int = 6):
         super().__init__()
         self.patient_loss = patient_loss
         self.auxiliary_weight = auxiliary_weight
+        self.label_smoothing = label_smoothing
+        self.num_classes = num_classes
         self.frame_loss = nn.BCEWithLogitsLoss(reduction='none') if use_auxiliary else None
+
+    def _smooth_labels(self, labels: torch.Tensor) -> torch.Tensor:
+        """将硬标签转为平滑软标签"""
+        one_hot = torch.zeros(labels.size(0), self.num_classes, device=labels.device)
+        one_hot.scatter_(1, labels.unsqueeze(1), 1.0)
+        return one_hot * (1 - self.label_smoothing) + self.label_smoothing / self.num_classes
 
     def forward(
         self,
@@ -118,8 +128,12 @@ class MILLoss(nn.Module):
     ) -> dict[str, torch.Tensor]:
 
         losses = {}
-        # 病人级损失
-        losses['patient'] = self.patient_loss(patient_logits, patient_labels)
+        # 标签平滑（对 FocalLoss 使用软标签，CE 已内置 label_smoothing）
+        if self.label_smoothing > 0 and not isinstance(self.patient_loss, nn.CrossEntropyLoss):
+            smooth_labels = self._smooth_labels(patient_labels)
+            losses['patient'] = self.patient_loss(patient_logits, smooth_labels)
+        else:
+            losses['patient'] = self.patient_loss(patient_logits, patient_labels)
 
         # 帧级辅助损失
         if self.frame_loss is not None and frame_logits is not None and frame_labels is not None:
@@ -148,7 +162,8 @@ def create_loss_function(
     samples_per_class: Optional[List[int]] = None,
     gamma: float = 2.0,
     auxiliary_weight: float = 0.3,
-    use_auxiliary: bool = True
+    use_auxiliary: bool = True,
+    label_smoothing: float = 0.0,
 ) -> MILLoss:
 
     if loss_type == 'focal':
@@ -160,8 +175,11 @@ def create_loss_function(
         patient_loss = ClassBalancedLoss(samples_per_class, gamma=gamma)
     elif loss_type == 'ce':
         weight = torch.tensor(class_weights, dtype=torch.float) if class_weights else None
-        patient_loss = nn.CrossEntropyLoss(weight=weight)
+        patient_loss = nn.CrossEntropyLoss(weight=weight, label_smoothing=label_smoothing)
+        label_smoothing = 0.0  # CE 已内置，MILLoss 不需要再处理
     else:
         raise ValueError(f"未知 loss_type: {loss_type}")
 
-    return MILLoss(patient_loss=patient_loss, auxiliary_weight=auxiliary_weight, use_auxiliary=use_auxiliary)
+    return MILLoss(patient_loss=patient_loss, auxiliary_weight=auxiliary_weight,
+                   use_auxiliary=use_auxiliary, label_smoothing=label_smoothing,
+                   num_classes=num_classes)

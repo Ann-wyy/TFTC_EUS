@@ -67,7 +67,8 @@ class EncoderConfig:
     # 是否冻结早期层
     freeze_early_layers: bool = True
     # 冻结到哪一层 (对于ResNet: 0-4)
-    freeze_until_layer: int = 2
+    # 0: conv1+bn1, 1: +layer1, 2: +layer2, 3: +layer3(推荐，82样本下只finetune layer4)
+    freeze_until_layer: int = 3
 
 
 @dataclass
@@ -150,7 +151,7 @@ class TrainingConfig:
     # 优化器
     optimizer: str = "adamw"
     learning_rate: float = 1e-5
-    weight_decay: float = 0.01
+    weight_decay: float = 0.05
 
     # 学习率调度
     scheduler: str = "cosine"  # 'cosine', 'step', 'plateau'
@@ -160,6 +161,7 @@ class TrainingConfig:
     # 损失函数
     loss_type: str = "focal"  # 'ce', 'focal', 'class_balanced'
     focal_gamma: float = 2.0
+    label_smoothing: float = 0.1  # 标签平滑，防止小数据集过拟合标签
 
     # 类别权重 (处理不平衡)
     class_weights: Optional[List[float]] = None

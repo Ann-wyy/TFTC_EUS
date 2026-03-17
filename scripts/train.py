@@ -262,6 +262,7 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
         gamma=config.training.focal_gamma,
         auxiliary_weight=config.classifier.auxiliary_weight,
         use_auxiliary=False,  # 无帧级标注，关闭辅助任务避免错误监督
+        label_smoothing=config.training.label_smoothing,
     )
 
     optimizer = AdamW(model.parameters(), lr=config.training.learning_rate, weight_decay=config.training.weight_decay)
