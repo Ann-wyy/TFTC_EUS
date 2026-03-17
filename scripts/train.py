@@ -154,6 +154,7 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
         feature_dim=config.encoder.feature_dim,
         num_classes=len(class_names),
         pretrained=True,
+        eus_channels=config.data.eus_channels,
     ).to(device)
 
     criterion_bag = nn.CrossEntropyLoss()
@@ -177,6 +178,7 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
             masks = batch['mask'].to(device)
             print("-" * 30)
             print(f"EUS Tensor 原始形状: {eus_frames.shape}")
+            B, N, Ce, H, W = eus_frames.shape
             print(f"传入的参数 - B: {B}, N: {N}, Ce: {Ce}, H: {H}, W: {W}")
             print(f"预期总量: {B * N * Ce * H * W}")
             print(f"实际总量: {eus_frames.numel()}")
