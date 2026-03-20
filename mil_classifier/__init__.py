@@ -17,10 +17,8 @@ __version__ = '1.0.0'
 
 from .models import (
     MultiModalMILClassifier,
-    create_model
 )
 
 __all__ = [
     'MultiModalMILClassifier',
-    'create_model',
 ]

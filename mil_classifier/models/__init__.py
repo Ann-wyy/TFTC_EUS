@@ -23,6 +23,8 @@ from .mil_pooling import (
     AttentionMILPooling,
     GatedAttentionMILPooling,
     TransformerMILPooling,
+    MaxMILPooling,
+    MeanMILPooling,
     MILPooling
 )
 
@@ -35,7 +37,6 @@ from .classifier import (
 
 from .mil_model import (
     MultiModalMILClassifier,
-    create_model
 )
 
 __all__ = [
@@ -57,6 +58,8 @@ __all__ = [
     'AttentionMILPooling',
     'GatedAttentionMILPooling',
     'TransformerMILPooling',
+    'MaxMILPooling',
+    'MeanMILPooling',
     'MILPooling',
 
     # Classifier
@@ -67,5 +70,4 @@ __all__ = [
 
     # Main Model
     'MultiModalMILClassifier',
-    'create_model',
 ]

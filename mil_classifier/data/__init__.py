@@ -13,12 +13,9 @@
 """
 
 from .dataset import (
-    EUSPreprocessor,
-    FolderMILDataset,
-    BalancedBatchSampler,
+    FolderMILDatasetPreprocessed,
     collate_fn,
     scan_data_folder,
-    create_data_loaders_from_folder
 )
 
 from .augmentation import (
@@ -35,12 +32,9 @@ from .augmentation import (
 
 __all__ = [
     # Dataset
-    'EUSPreprocessor',
-    'FolderMILDataset',
-    'BalancedBatchSampler',
+    'FolderMILDatasetPreprocessed',
     'collate_fn',
     'scan_data_folder',
-    'create_data_loaders_from_folder',
 
     # Augmentation
     'SpeckleNoise',
