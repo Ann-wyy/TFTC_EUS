@@ -132,6 +132,7 @@ class MultiModalMILClassifier(nn.Module):
         pretrained=True,
         k=5,
         eus_channels=3,
+        use_relational_attention=True,
     ):
 
         super().__init__()
@@ -142,12 +143,14 @@ class MultiModalMILClassifier(nn.Module):
             pretrained=pretrained,
             feature_dim=feature_dim,
             input_channels=eus_channels,
+            use_relational_attention=use_relational_attention,
         )
 
         self.wli_encoder = WhiteLightEncoder(
             backbone,
             pretrained=pretrained,
-            feature_dim=feature_dim
+            feature_dim=feature_dim,
+            use_relational_attention=use_relational_attention,
         )
 
         # frame modeling

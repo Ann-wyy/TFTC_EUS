@@ -238,6 +238,7 @@ def train_fold(config: Config, fold_idx, train_loader, val_loader, class_names, 
         num_classes=len(class_names),
         pretrained=True,
         eus_channels=config.data.eus_channels,
+        use_relational_attention=config.encoder.use_relational_attention,
     ).to(device)
 
     # 计算 class weights（基于当前折训练集样本分布）

@@ -70,6 +70,10 @@ class EncoderConfig:
     # 0: conv1+bn1, 1: +layer1, 2: +layer2, 3: +layer3(推荐，82样本下只finetune layer4)
     freeze_until_layer: int = 3
 
+    # LA-RANet RelationalAttention: 在 backbone 空间特征上加 GLCM 纹理注意力
+    # 仅对 ResNet 系列有效；对 ViT/ConvNeXt 自动关闭
+    use_relational_attention: bool = True
+
 
 @dataclass
 class FusionConfig:

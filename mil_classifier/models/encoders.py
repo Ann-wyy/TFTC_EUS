@@ -15,6 +15,8 @@ from torchvision.models import (
 )
 from typing import Optional
 
+from .relational_attention import RelationalAttention
+
 
 class BaseEncoder(nn.Module):
     """
@@ -40,21 +42,35 @@ class BaseEncoder(nn.Module):
         feature_dim: int = 512,
         input_channels: int = 3,
         freeze_early_layers: bool = True,
-        freeze_until_layer: int = 2
+        freeze_until_layer: int = 2,
+        use_relational_attention: bool = True,
     ):
         super().__init__()
 
         self.backbone_name = backbone
         self.feature_dim = feature_dim
 
-        # 创建backbone
+        # 创建backbone (fc=Identity，输出 [B, backbone_dim])
         self.backbone, backbone_dim = self._create_backbone(
             backbone, pretrained, input_channels
         )
 
-        # 冻结早期层
+        # 冻结早期层（在重建 backbone 结构前执行，保证命名属性可访问）
         if freeze_early_layers:
             self._freeze_layers(freeze_until_layer)
+
+        # ----------------------------------------------------------
+        # LA-RANet RelationalAttention 集成（仅 ResNet 系列支持）
+        # 将 backbone 重建为空间特征提取器（去掉 avgpool + fc），
+        # 插入 RelationalAttention，再手动 GAP，输出 [B, backbone_dim]
+        # ----------------------------------------------------------
+        self.use_relational_attention = use_relational_attention and ('resnet' in backbone)
+        if self.use_relational_attention:
+            # list(children()): [conv1,bn1,relu,maxpool,layer1,layer2,layer3,layer4,avgpool,fc]
+            # [:-2] 去掉 avgpool 和 fc_Identity → 输出 [B, backbone_dim, H, W]
+            self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
+            self.rel_attn = RelationalAttention()
+            self.gap = nn.AdaptiveAvgPool2d(1)
 
         # 投影层: 将backbone输出映射到统一维度
         self.projection = nn.Sequential(
@@ -215,8 +231,15 @@ class BaseEncoder(nn.Module):
         Returns:
             特征向量 [B, feature_dim]
         """
-        # 提取backbone特征
-        features = self.backbone(x)
+        if self.use_relational_attention:
+            # backbone 输出空间特征 [B, C, H, W]
+            spatial = self.backbone(x)
+            # GLCM 关系注意力 mask [B, 1, H, W]
+            attn_mask = self.rel_attn(spatial)
+            # 加权后全局平均池化 → [B, C]
+            features = self.gap(spatial * attn_mask).flatten(1)
+        else:
+            features = self.backbone(x)
 
         # 投影到统一维度
         features = self.projection(features)
@@ -239,7 +262,8 @@ class UltrasoundEncoder(BaseEncoder):
         feature_dim: int = 512,
         input_channels: int = 3,
         freeze_early_layers: bool = True,
-        freeze_until_layer: int = 2
+        freeze_until_layer: int = 2,
+        use_relational_attention: bool = True,
     ):
         super().__init__(
             backbone=backbone,
@@ -247,7 +271,8 @@ class UltrasoundEncoder(BaseEncoder):
             feature_dim=feature_dim,
             input_channels=input_channels,
             freeze_early_layers=freeze_early_layers,
-            freeze_until_layer=freeze_until_layer
+            freeze_until_layer=freeze_until_layer,
+            use_relational_attention=use_relational_attention,
         )
 
 
@@ -265,7 +290,8 @@ class WhiteLightEncoder(BaseEncoder):
         pretrained: bool = True,
         feature_dim: int = 512,
         freeze_early_layers: bool = True,
-        freeze_until_layer: int = 2
+        freeze_until_layer: int = 2,
+        use_relational_attention: bool = True,
     ):
         super().__init__(
             backbone=backbone,
@@ -273,7 +299,8 @@ class WhiteLightEncoder(BaseEncoder):
             feature_dim=feature_dim,
             input_channels=3,  # RGB
             freeze_early_layers=freeze_early_layers,
-            freeze_until_layer=freeze_until_layer
+            freeze_until_layer=freeze_until_layer,
+            use_relational_attention=use_relational_attention,
         )
 
 
@@ -283,7 +310,8 @@ def create_encoder(
     pretrained: bool = True,
     feature_dim: int = 512,
     freeze_early_layers: bool = True,
-    freeze_until_layer: int = 2
+    freeze_until_layer: int = 2,
+    use_relational_attention: bool = True,
 ) -> BaseEncoder:
     """
     创建编码器的工厂函数
@@ -305,7 +333,8 @@ def create_encoder(
             pretrained=pretrained,
             feature_dim=feature_dim,
             freeze_early_layers=freeze_early_layers,
-            freeze_until_layer=freeze_until_layer
+            freeze_until_layer=freeze_until_layer,
+            use_relational_attention=use_relational_attention,
         )
     elif modality == 'white_light':
         return WhiteLightEncoder(
@@ -313,7 +342,8 @@ def create_encoder(
             pretrained=pretrained,
             feature_dim=feature_dim,
             freeze_early_layers=freeze_early_layers,
-            freeze_until_layer=freeze_until_layer
+            freeze_until_layer=freeze_until_layer,
+            use_relational_attention=use_relational_attention,
         )
     else:
         raise ValueError(f"未知的modality: {modality}")

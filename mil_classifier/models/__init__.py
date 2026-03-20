@@ -4,6 +4,8 @@
 导出所有模型组件
 """
 
+from .relational_attention import RelationalAttention
+
 from .encoders import (
     BaseEncoder,
     UltrasoundEncoder,
@@ -37,6 +39,9 @@ from .mil_model import (
 )
 
 __all__ = [
+    # Relational Attention (from LA-RANet)
+    'RelationalAttention',
+
     # Encoders
     'BaseEncoder',
     'UltrasoundEncoder',
